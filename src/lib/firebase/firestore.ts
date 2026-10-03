@@ -7,16 +7,57 @@ import {
   getDocs,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 
 import { db } from "./client";
 
+
+// ============================================================
+// SMALL INTERNAL HELPERS
+// ============================================================
+
+function timestampToMillis(value: unknown): number {
+  if (
+    value &&
+    typeof value === "object" &&
+    "toMillis" in value &&
+    typeof (value as { toMillis?: unknown }).toMillis === "function"
+  ) {
+    return (value as { toMillis: () => number }).toMillis();
+  }
+
+  return 0;
+}
+
+function getBlockReference(
+  blockerId: string,
+  blockedId: string
+) {
+  return doc(
+    db,
+    "blocks",
+    blockerId,
+    "blockedUsers",
+    blockedId
+  );
+}
+
+
+// ============================================================
+// USERS
+// ============================================================
+
 export type UserRole = "student" | "alumni";
-export type UserStatus = "active" | "pending";
+
+export type UserStatus =
+  | "active"
+  | "pending";
 
 export interface UserProfile {
   uid: string;
@@ -30,7 +71,9 @@ export interface UserProfile {
   updatedAt?: unknown;
 }
 
-export async function getUserProfile(uid: string) {
+export async function getUserProfile(
+  uid: string
+): Promise<UserProfile | null> {
   const reference = doc(db, "users", uid);
 
   const snapshot = await getDoc(reference);
@@ -49,26 +92,34 @@ export async function createUserProfile(
     displayName: string;
     role: UserRole;
     photoURL?: string | null;
-  },
+  }
 ) {
   const reference = doc(db, "users", uid);
 
   const profile: UserProfile = {
-  uid,
-  email: data.email,
-  displayName: data.displayName,
-  role: data.role,
-  status: data.role === "alumni" ? "pending" : "active",
-  photoURL: data.photoURL ?? null,
-  isAdmin: false,
-  createdAt: serverTimestamp(),
-  updatedAt: serverTimestamp(),
-};
+    uid,
+    email: data.email,
+    displayName: data.displayName,
+    role: data.role,
+    status:
+      data.role === "alumni"
+        ? "pending"
+        : "active",
+    photoURL: data.photoURL ?? null,
+    isAdmin: false,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
 
   await setDoc(reference, profile);
 
   return profile;
 }
+
+
+// ============================================================
+// STUDENT PROFILES
+// ============================================================
 
 export async function createStudentProfile(
   uid: string,
@@ -77,9 +128,13 @@ export async function createStudentProfile(
     graduationYear: string;
     interests: string[];
     bio: string;
-  },
+  }
 ) {
-  const reference = doc(db, "studentProfiles", uid);
+  const reference = doc(
+    db,
+    "studentProfiles",
+    uid
+  );
 
   await setDoc(reference, {
     uid,
@@ -92,6 +147,11 @@ export async function createStudentProfile(
     updatedAt: serverTimestamp(),
   });
 }
+
+
+// ============================================================
+// ALUMNI PROFILES
+// ============================================================
 
 export async function createAlumniProfile(
   uid: string,
@@ -106,9 +166,13 @@ export async function createAlumniProfile(
     expertise: string[];
     bio: string;
     mentorshipAvailable: boolean;
-  },
+  }
 ) {
-  const reference = doc(db, "alumniProfiles", uid);
+  const reference = doc(
+    db,
+    "alumniProfiles",
+    uid
+  );
 
   await setDoc(reference, {
     uid,
@@ -121,18 +185,27 @@ export async function createAlumniProfile(
     company: data.company,
     expertise: data.expertise,
     bio: data.bio,
-    mentorshipAvailable: data.mentorshipAvailable,
+    mentorshipAvailable:
+      data.mentorshipAvailable,
     verificationStatus: "pending",
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
 }
+
 export async function getPendingAlumni() {
-  const alumniRef = collection(db, "alumniProfiles");
+  const alumniRef = collection(
+    db,
+    "alumniProfiles"
+  );
 
   const q = query(
     alumniRef,
-    where("verificationStatus", "==", "pending")
+    where(
+      "verificationStatus",
+      "==",
+      "pending"
+    )
   );
 
   const snapshot = await getDocs(q);
@@ -146,20 +219,56 @@ export async function getPendingAlumni() {
 export async function updateAlumniVerification(
   uid: string,
   status: "verified" | "rejected"
-) {
-  const alumniRef = doc(db, "alumniProfiles", uid);
+): Promise<void> {
+  const alumniRef = doc(
+    db,
+    "alumniProfiles",
+    uid
+  );
 
-  await updateDoc(alumniRef, {
+  const userRef = doc(
+    db,
+    "users",
+    uid
+  );
+
+  const batch = writeBatch(db);
+
+  batch.update(alumniRef, {
     verificationStatus: status,
     updatedAt: serverTimestamp(),
   });
+
+  /*
+   * Keep users.status and alumni verification aligned.
+   *
+   * Verified alumni become active.
+   * Rejected alumni remain pending until reviewed again.
+   */
+  batch.update(userRef, {
+    status:
+      status === "verified"
+        ? "active"
+        : "pending",
+    updatedAt: serverTimestamp(),
+  });
+
+  await batch.commit();
 }
+
 export async function getVerifiedAlumni() {
-  const alumniRef = collection(db, "alumniProfiles");
+  const alumniRef = collection(
+    db,
+    "alumniProfiles"
+  );
 
   const q = query(
     alumniRef,
-    where("verificationStatus", "==", "verified")
+    where(
+      "verificationStatus",
+      "==",
+      "verified"
+    )
   );
 
   const snapshot = await getDocs(q);
@@ -169,8 +278,15 @@ export async function getVerifiedAlumni() {
     ...item.data(),
   }));
 }
-export async function getAlumniProfile(uid: string) {
-  const reference = doc(db, "alumniProfiles", uid);
+
+export async function getAlumniProfile(
+  uid: string
+) {
+  const reference = doc(
+    db,
+    "alumniProfiles",
+    uid
+  );
 
   const snapshot = await getDoc(reference);
 
@@ -183,6 +299,12 @@ export async function getAlumniProfile(uid: string) {
     ...snapshot.data(),
   };
 }
+
+
+// ============================================================
+// MENTORSHIP REQUESTS
+// ============================================================
+
 export type MentorshipRequestStatus =
   | "pending"
   | "accepted"
@@ -194,22 +316,53 @@ export type MentorshipRequest = {
   studentId: string;
   alumniId: string;
   message: string;
-  status: "pending" | "accepted" | "declined" | "cancelled";
+  status: MentorshipRequestStatus;
   createdAt?: unknown;
   updatedAt?: unknown;
 };
+
 export async function createMentorshipRequest(
   studentId: string,
   alumniId: string,
   message: string
-) {
-  const requestRef = doc(collection(db, "mentorshipRequests"));
+): Promise<string> {
+  const cleanMessage = message.trim();
 
+  if (!cleanMessage) {
+    throw new Error(
+      "Mentorship request message cannot be empty."
+    );
+  }
+
+  if (cleanMessage.length > 2000) {
+    throw new Error(
+      "Mentorship request message is too long."
+    );
+  }
+
+  if (studentId === alumniId) {
+    throw new Error(
+      "You cannot request mentorship from yourself."
+    );
+  }
+
+  const requestRef = doc(
+    collection(
+      db,
+      "mentorshipRequests"
+    )
+  );
+
+  /*
+   * We deliberately DO NOT store an extra `id`
+   * field anymore.
+   *
+   * Firestore already gives the document its ID.
+   */
   await setDoc(requestRef, {
-    id: requestRef.id,
     studentId,
     alumniId,
-    message: message.trim(),
+    message: cleanMessage,
     status: "pending",
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -221,11 +374,18 @@ export async function createMentorshipRequest(
 export async function getMentorshipRequestsForStudent(
   studentId: string
 ): Promise<MentorshipRequest[]> {
-  const requestsRef = collection(db, "mentorshipRequests");
+  const requestsRef = collection(
+    db,
+    "mentorshipRequests"
+  );
 
   const q = query(
     requestsRef,
-    where("studentId", "==", studentId)
+    where(
+      "studentId",
+      "==",
+      studentId
+    )
   );
 
   const snapshot = await getDocs(q);
@@ -239,11 +399,18 @@ export async function getMentorshipRequestsForStudent(
 export async function getMentorshipRequestsForAlumni(
   alumniId: string
 ): Promise<MentorshipRequest[]> {
-  const requestsRef = collection(db, "mentorshipRequests");
+  const requestsRef = collection(
+    db,
+    "mentorshipRequests"
+  );
 
   const q = query(
     requestsRef,
-    where("alumniId", "==", alumniId)
+    where(
+      "alumniId",
+      "==",
+      alumniId
+    )
   );
 
   const snapshot = await getDocs(q);
@@ -254,25 +421,23 @@ export async function getMentorshipRequestsForAlumni(
   })) as MentorshipRequest[];
 }
 
-export async function updateMentorshipRequest(
-  requestId: string,
-  status: "accepted" | "declined" | "cancelled"
-) {
-  const requestRef = doc(
-    db,
-    "mentorshipRequests",
-    requestId
-  );
 
-  await updateDoc(requestRef, {
-    status,
-    updatedAt: serverTimestamp(),
-  });
-}
+// ============================================================
+// CONVERSATIONS
+// ============================================================
+
 export type Conversation = {
   id: string;
   studentId: string;
   alumniId: string;
+
+  /*
+   * New secure architecture:
+   * every new conversation points back to the
+   * mentorship request that created it.
+   */
+  mentorshipRequestId?: string;
+
   createdAt?: unknown;
   lastMessage?: string;
   lastMessageAt?: unknown;
@@ -284,65 +449,357 @@ export type ChatMessage = {
   text: string;
   createdAt?: unknown;
 };
+
+
+/*
+ * Secure deterministic conversation creation.
+ *
+ * Conversation document ID =
+ * mentorship request document ID.
+ *
+ * Therefore the same mentorship acceptance cannot
+ * accidentally create multiple conversations.
+ */
 export async function createConversation(
   studentId: string,
-  alumniId: string
+  alumniId: string,
+  mentorshipRequestId: string
 ): Promise<string> {
-  const conversationsRef = collection(db, "conversations");
-
-  const existingQuery = query(
-    conversationsRef,
-    where("studentId", "==", studentId),
-    where("alumniId", "==", alumniId)
-  );
-
-  const existingSnapshot = await getDocs(existingQuery);
-
-  if (!existingSnapshot.empty) {
-    return existingSnapshot.docs[0].id;
+  if (!mentorshipRequestId) {
+    throw new Error(
+      "A mentorship request is required to create a conversation."
+    );
   }
 
-  const conversation = await addDoc(conversationsRef, {
+  const requestRef = doc(
+    db,
+    "mentorshipRequests",
+    mentorshipRequestId
+  );
+
+  const requestSnapshot =
+    await getDoc(requestRef);
+
+  if (!requestSnapshot.exists()) {
+    throw new Error(
+      "Mentorship request not found."
+    );
+  }
+
+  const requestData =
+    requestSnapshot.data();
+
+  if (
+    requestData.studentId !== studentId ||
+    requestData.alumniId !== alumniId
+  ) {
+    throw new Error(
+      "Conversation participants do not match the mentorship request."
+    );
+  }
+
+  if (
+    requestData.status !== "accepted"
+  ) {
+    throw new Error(
+      "A conversation can only be created for an accepted mentorship request."
+    );
+  }
+
+  const conversationRef = doc(
+    db,
+    "conversations",
+    mentorshipRequestId
+  );
+
+  const existing =
+    await getDoc(conversationRef);
+
+  if (existing.exists()) {
+    const data = existing.data();
+
+    if (
+      data.studentId !== studentId ||
+      data.alumniId !== alumniId
+    ) {
+      throw new Error(
+        "Existing conversation participants do not match."
+      );
+    }
+
+    return conversationRef.id;
+  }
+
+  await setDoc(conversationRef, {
     studentId,
     alumniId,
+    mentorshipRequestId,
     createdAt: serverTimestamp(),
     lastMessage: "",
     lastMessageAt: serverTimestamp(),
   });
 
-  return conversation.id;
+  return conversationRef.id;
 }
+
+
+/*
+ * IMPORTANT:
+ *
+ * Accepting mentorship and creating the conversation
+ * now happen inside ONE Firestore transaction.
+ *
+ * Either both succeed or neither succeeds.
+ */
+export async function acceptMentorshipRequest(
+  requestId: string
+): Promise<string> {
+  const requestRef = doc(
+    db,
+    "mentorshipRequests",
+    requestId
+  );
+
+  /*
+   * Deterministic:
+   *
+   * conversations/{requestId}
+   */
+  const conversationRef = doc(
+    db,
+    "conversations",
+    requestId
+  );
+
+  await runTransaction(
+    db,
+    async (transaction) => {
+      /*
+       * ALL transaction reads happen before writes.
+       */
+      const requestSnapshot =
+        await transaction.get(requestRef);
+
+      const conversationSnapshot =
+        await transaction.get(
+          conversationRef
+        );
+
+      if (!requestSnapshot.exists()) {
+        throw new Error(
+          "Mentorship request not found."
+        );
+      }
+
+      const requestData =
+        requestSnapshot.data();
+
+      const studentId =
+        requestData.studentId;
+
+      const alumniId =
+        requestData.alumniId;
+
+      if (
+        typeof studentId !== "string" ||
+        typeof alumniId !== "string"
+      ) {
+        throw new Error(
+          "Invalid mentorship request."
+        );
+      }
+
+      /*
+       * Make retries safe.
+       */
+      if (
+        requestData.status === "accepted"
+      ) {
+        if (
+          conversationSnapshot.exists()
+        ) {
+          const conversationData =
+            conversationSnapshot.data();
+
+          if (
+            conversationData.studentId !==
+              studentId ||
+            conversationData.alumniId !==
+              alumniId
+          ) {
+            throw new Error(
+              "Existing conversation does not match this mentorship request."
+            );
+          }
+
+          return;
+        }
+
+        /*
+         * Repair path:
+         * accepted request exists but its deterministic
+         * conversation does not.
+         */
+        transaction.set(
+          conversationRef,
+          {
+            studentId,
+            alumniId,
+            mentorshipRequestId:
+              requestId,
+            createdAt:
+              serverTimestamp(),
+            lastMessage: "",
+            lastMessageAt:
+              serverTimestamp(),
+          }
+        );
+
+        return;
+      }
+
+      if (
+        requestData.status !== "pending"
+      ) {
+        throw new Error(
+          "This mentorship request is no longer pending."
+        );
+      }
+
+      if (
+        conversationSnapshot.exists()
+      ) {
+        throw new Error(
+          "A conversation already exists for this mentorship request."
+        );
+      }
+
+      /*
+       * Atomic operation:
+       *
+       * pending -> accepted
+       *
+       * AND
+       *
+       * conversation creation
+       */
+      transaction.update(
+        requestRef,
+        {
+          status: "accepted",
+          updatedAt:
+            serverTimestamp(),
+        }
+      );
+
+      transaction.set(
+        conversationRef,
+        {
+          studentId,
+          alumniId,
+          mentorshipRequestId:
+            requestId,
+          createdAt:
+            serverTimestamp(),
+          lastMessage: "",
+          lastMessageAt:
+            serverTimestamp(),
+        }
+      );
+    }
+  );
+
+  return requestId;
+}
+
+
+/*
+ * Compatibility helper used by existing pages.
+ *
+ * "accepted" routes through the secure transaction.
+ * decline/cancel remain simple state transitions.
+ */
+export async function updateMentorshipRequest(
+  requestId: string,
+  status:
+    | "accepted"
+    | "declined"
+    | "cancelled"
+): Promise<void> {
+  if (status === "accepted") {
+    await acceptMentorshipRequest(
+      requestId
+    );
+
+    return;
+  }
+
+  const requestRef = doc(
+    db,
+    "mentorshipRequests",
+    requestId
+  );
+
+  await updateDoc(requestRef, {
+    status,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+
 export async function getConversationsForUser(
   userId: string
 ): Promise<Conversation[]> {
-  const conversationsRef = collection(db, "conversations");
+  const conversationsRef =
+    collection(
+      db,
+      "conversations"
+    );
 
   const studentQuery = query(
     conversationsRef,
-    where("studentId", "==", userId)
+    where(
+      "studentId",
+      "==",
+      userId
+    )
   );
 
   const alumniQuery = query(
     conversationsRef,
-    where("alumniId", "==", userId)
+    where(
+      "alumniId",
+      "==",
+      userId
+    )
   );
 
-  const [studentSnapshot, alumniSnapshot] =
-    await Promise.all([
-      getDocs(studentQuery),
-      getDocs(alumniQuery),
-    ]);
+  const [
+    studentSnapshot,
+    alumniSnapshot,
+  ] = await Promise.all([
+    getDocs(studentQuery),
+    getDocs(alumniQuery),
+  ]);
 
   const conversations = [
     ...studentSnapshot.docs,
     ...alumniSnapshot.docs,
   ];
 
-  return conversations.map((item) => ({
-    id: item.id,
-    ...item.data(),
-  })) as Conversation[];
+  return conversations.map(
+    (item) => ({
+      id: item.id,
+      ...item.data(),
+    })
+  ) as Conversation[];
 }
+
+
+// ============================================================
+// MESSAGES
+// ============================================================
+
 export async function sendMessage(
   conversationId: string,
   senderId: string,
@@ -351,12 +808,22 @@ export async function sendMessage(
   const cleanText = text.trim();
 
   if (!cleanText) {
-    throw new Error("Message cannot be empty.");
+    throw new Error(
+      "Message cannot be empty."
+    );
   }
 
   if (cleanText.length > 2000) {
-    throw new Error("Message is too long.");
+    throw new Error(
+      "Message is too long."
+    );
   }
+
+  const conversationRef = doc(
+    db,
+    "conversations",
+    conversationId
+  );
 
   const messagesRef = collection(
     db,
@@ -365,20 +832,38 @@ export async function sendMessage(
     "messages"
   );
 
-  await addDoc(messagesRef, {
+  /*
+   * Pre-generate message ID so the message and
+   * conversation preview can be committed together.
+   */
+  const messageRef =
+    doc(messagesRef);
+
+  const batch = writeBatch(db);
+
+  batch.set(messageRef, {
     senderId,
     text: cleanText,
     createdAt: serverTimestamp(),
   });
 
-  await updateDoc(
-    doc(db, "conversations", conversationId),
+  batch.update(
+    conversationRef,
     {
       lastMessage: cleanText,
-      lastMessageAt: serverTimestamp(),
+      lastMessageAt:
+        serverTimestamp(),
     }
   );
+
+  /*
+   * Atomic:
+   * no message without preview update,
+   * no preview update without message.
+   */
+  await batch.commit();
 }
+
 export async function getConversationMessages(
   conversationId: string
 ): Promise<ChatMessage[]> {
@@ -389,76 +874,88 @@ export async function getConversationMessages(
     "messages"
   );
 
-  const snapshot = await getDocs(messagesRef);
+  const snapshot =
+    await getDocs(messagesRef);
 
-  const messages: ChatMessage[] = snapshot.docs.map((item) => {
-    const data = item.data();
+  const messages: ChatMessage[] =
+    snapshot.docs.map((item) => {
+      const data = item.data();
 
-    return {
-      id: item.id,
-      senderId: data.senderId as string,
-      text: data.text as string,
-      createdAt: data.createdAt,
-    };
-  });
+      return {
+        id: item.id,
+        senderId:
+          data.senderId as string,
+        text:
+          data.text as string,
+        createdAt:
+          data.createdAt,
+      };
+    });
 
-  return messages.sort((a, b) => {
-    const aTime =
-      typeof (a.createdAt as any)?.toMillis === "function"
-        ? (a.createdAt as any).toMillis()
-        : 0;
-
-    const bTime =
-      typeof (b.createdAt as any)?.toMillis === "function"
-        ? (b.createdAt as any).toMillis()
-        : 0;
-
-    return aTime - bTime;
-  });
+  return messages.sort(
+    (a, b) =>
+      timestampToMillis(
+        a.createdAt
+      ) -
+      timestampToMillis(
+        b.createdAt
+      )
+  );
 }
-export async function acceptMentorshipRequest(
-  requestId: string
-): Promise<string> {
-  const requestRef = doc(
+
+export function subscribeToMessages(
+  conversationId: string,
+  callback:
+    (messages: ChatMessage[]) => void
+) {
+  const messagesRef = collection(
     db,
-    "mentorshipRequests",
-    requestId
+    "conversations",
+    conversationId,
+    "messages"
   );
 
-  const requestSnapshot = await getDoc(requestRef);
+  return onSnapshot(
+    messagesRef,
+    (snapshot) => {
+      const messages: ChatMessage[] =
+        snapshot.docs.map((item) => {
+          const data = item.data();
 
-  if (!requestSnapshot.exists()) {
-    throw new Error("Mentorship request not found.");
-  }
+          return {
+            id: item.id,
+            senderId:
+              data.senderId as string,
+            text:
+              data.text as string,
+            createdAt:
+              data.createdAt,
+          };
+        });
 
-  const requestData = requestSnapshot.data();
+      messages.sort(
+        (a, b) =>
+          timestampToMillis(
+            a.createdAt
+          ) -
+          timestampToMillis(
+            b.createdAt
+          )
+      );
 
-  if (
-    !requestData.studentId ||
-    !requestData.alumniId
-  ) {
-    throw new Error("Invalid mentorship request.");
-  }
-
-  if (requestData.status !== "pending") {
-    throw new Error(
-      "This mentorship request is no longer pending."
-    );
-  }
-
-  await updateDoc(requestRef, {
-    status: "accepted",
-    updatedAt: serverTimestamp(),
-  });
-
-  const conversationId = await createConversation(
-    requestData.studentId,
-    requestData.alumniId
+      callback(messages);
+    }
   );
-
-  return conversationId;
 }
-export type QuestionStatus = "open" | "answered";
+
+
+// ============================================================
+// ASK AN ALUMNI
+// ============================================================
+
+export type QuestionStatus =
+  | "open"
+  | "answered";
 
 export type Question = {
   id: string;
@@ -478,21 +975,40 @@ export async function createQuestion(
   studentName: string,
   questionText: string
 ): Promise<string> {
-  const cleanText = questionText.trim();
+  const cleanText =
+    questionText.trim();
 
   if (!cleanText) {
-    throw new Error("Question cannot be empty.");
+    throw new Error(
+      "Question cannot be empty."
+    );
   }
 
-  const questionsRef = collection(db, "questions");
+  if (cleanText.length > 3000) {
+    throw new Error(
+      "Question is too long."
+    );
+  }
 
-  const question = await addDoc(questionsRef, {
-    studentId,
-    studentName,
-    questionText: cleanText,
-    status: "open",
-    createdAt: serverTimestamp(),
-  });
+  const questionsRef =
+    collection(
+      db,
+      "questions"
+    );
+
+  const question =
+    await addDoc(
+      questionsRef,
+      {
+        studentId,
+        studentName,
+        questionText:
+          cleanText,
+        status: "open",
+        createdAt:
+          serverTimestamp(),
+      }
+    );
 
   return question.id;
 }
@@ -500,29 +1016,58 @@ export async function createQuestion(
 export async function getQuestionsForStudent(
   studentId: string
 ): Promise<Question[]> {
-  const questionsRef = collection(db, "questions");
+  const questionsRef =
+    collection(
+      db,
+      "questions"
+    );
 
-  const q = query(questionsRef, where("studentId", "==", studentId));
+  const q = query(
+    questionsRef,
+    where(
+      "studentId",
+      "==",
+      studentId
+    )
+  );
 
-  const snapshot = await getDocs(q);
+  const snapshot =
+    await getDocs(q);
 
-  return snapshot.docs.map((item) => ({
-    id: item.id,
-    ...item.data(),
-  })) as Question[];
+  return snapshot.docs.map(
+    (item) => ({
+      id: item.id,
+      ...item.data(),
+    })
+  ) as Question[];
 }
 
-export async function getOpenQuestions(): Promise<Question[]> {
-  const questionsRef = collection(db, "questions");
+export async function getOpenQuestions():
+  Promise<Question[]> {
+  const questionsRef =
+    collection(
+      db,
+      "questions"
+    );
 
-  const q = query(questionsRef, where("status", "==", "open"));
+  const q = query(
+    questionsRef,
+    where(
+      "status",
+      "==",
+      "open"
+    )
+  );
 
-  const snapshot = await getDocs(q);
+  const snapshot =
+    await getDocs(q);
 
-  return snapshot.docs.map((item) => ({
-    id: item.id,
-    ...item.data(),
-  })) as Question[];
+  return snapshot.docs.map(
+    (item) => ({
+      id: item.id,
+      ...item.data(),
+    })
+  ) as Question[];
 }
 
 export async function answerQuestion(
@@ -531,65 +1076,47 @@ export async function answerQuestion(
   answererName: string,
   answerText: string
 ): Promise<void> {
-  const cleanAnswer = answerText.trim();
+  const cleanAnswer =
+    answerText.trim();
 
   if (!cleanAnswer) {
-    throw new Error("Answer cannot be empty.");
+    throw new Error(
+      "Answer cannot be empty."
+    );
   }
 
-  const questionRef = doc(db, "questions", questionId);
+  if (
+    cleanAnswer.length > 5000
+  ) {
+    throw new Error(
+      "Answer is too long."
+    );
+  }
+
+  const questionRef = doc(
+    db,
+    "questions",
+    questionId
+  );
 
   await updateDoc(questionRef, {
     status: "answered",
     answererId,
     answererName,
     answerText: cleanAnswer,
-    answeredAt: serverTimestamp(),
+    answeredAt:
+      serverTimestamp(),
   });
 }
 
 
-export function subscribeToMessages(
-  conversationId: string,
-  callback: (messages: ChatMessage[]) => void
-) {
-  const messagesRef = collection(
-    db,
-    "conversations",
-    conversationId,
-    "messages"
-  );
+// ============================================================
+// REPORTS
+// ============================================================
 
-  return onSnapshot(messagesRef, (snapshot) => {
-    const messages: ChatMessage[] = snapshot.docs.map((item) => {
-      const data = item.data();
-
-      return {
-        id: item.id,
-        senderId: data.senderId as string,
-        text: data.text as string,
-        createdAt: data.createdAt,
-      };
-    });
-
-    messages.sort((a, b) => {
-      const aTime =
-        typeof (a.createdAt as any)?.toMillis === "function"
-          ? (a.createdAt as any).toMillis()
-          : 0;
-
-      const bTime =
-        typeof (b.createdAt as any)?.toMillis === "function"
-          ? (b.createdAt as any).toMillis()
-          : 0;
-
-      return aTime - bTime;
-    });
-
-    callback(messages);
-  });
-}
-export type ReportStatus = "open" | "resolved";
+export type ReportStatus =
+  | "open"
+  | "resolved";
 
 export type Report = {
   id: string;
@@ -601,6 +1128,7 @@ export type Report = {
   reason: string;
   status: ReportStatus;
   createdAt?: unknown;
+  resolvedAt?: unknown;
 };
 
 export async function submitReport(
@@ -611,82 +1139,202 @@ export async function submitReport(
   reportedUserName: string,
   reason: string
 ): Promise<void> {
-  const cleanReason = reason.trim();
+  const cleanReason =
+    reason.trim();
 
   if (!cleanReason) {
-    throw new Error("Please describe the issue before submitting.");
+    throw new Error(
+      "Please describe the issue before submitting."
+    );
   }
 
-  const reportsRef = collection(db, "reports");
+  if (
+    cleanReason.length > 2000
+  ) {
+    throw new Error(
+      "Report description is too long."
+    );
+  }
 
-  await addDoc(reportsRef, {
-    conversationId,
-    reporterId,
-    reporterName,
-    reportedUserId,
-    reportedUserName,
-    reason: cleanReason,
-    status: "open",
-    createdAt: serverTimestamp(),
-  });
+  if (
+    reporterId ===
+    reportedUserId
+  ) {
+    throw new Error(
+      "You cannot report yourself."
+    );
+  }
+
+  const reportsRef =
+    collection(
+      db,
+      "reports"
+    );
+
+  await addDoc(
+    reportsRef,
+    {
+      conversationId,
+      reporterId,
+      reporterName,
+      reportedUserId,
+      reportedUserName,
+      reason: cleanReason,
+      status: "open",
+      createdAt:
+        serverTimestamp(),
+    }
+  );
 }
 
-export async function getOpenReports(): Promise<Report[]> {
-  const reportsRef = collection(db, "reports");
+export async function getOpenReports():
+  Promise<Report[]> {
+  const reportsRef =
+    collection(
+      db,
+      "reports"
+    );
 
-  const q = query(reportsRef, where("status", "==", "open"));
+  const q = query(
+    reportsRef,
+    where(
+      "status",
+      "==",
+      "open"
+    )
+  );
 
-  const snapshot = await getDocs(q);
+  const snapshot =
+    await getDocs(q);
 
-  return snapshot.docs.map((item) => ({
-    id: item.id,
-    ...item.data(),
-  })) as Report[];
+  return snapshot.docs.map(
+    (item) => ({
+      id: item.id,
+      ...item.data(),
+    })
+  ) as Report[];
 }
 
-export async function resolveReport(reportId: string): Promise<void> {
-  const reportRef = doc(db, "reports", reportId);
+export async function resolveReport(
+  reportId: string
+): Promise<void> {
+  const reportRef = doc(
+    db,
+    "reports",
+    reportId
+  );
 
   await updateDoc(reportRef, {
     status: "resolved",
-    resolvedAt: serverTimestamp(),
+    resolvedAt:
+      serverTimestamp(),
   });
 }
 
+
+// ============================================================
+// BLOCKING
+// ============================================================
+
+/*
+ * OLD architecture:
+ *
+ * blocks/{randomId}
+ *
+ *
+ * NEW architecture:
+ *
+ * blocks/{blockerId}/blockedUsers/{blockedId}
+ *
+ *
+ * Benefits:
+ *
+ * - deterministic
+ * - duplicate blocks impossible
+ * - no query required
+ * - Firestore Rules can directly test whether
+ *   either person blocked the other
+ * - no concatenated UID collision problem
+ */
 export async function blockUser(
   blockerId: string,
   blockedId: string
 ): Promise<string> {
-  const blocksRef = collection(db, "blocks");
+  if (!blockerId || !blockedId) {
+    throw new Error(
+      "Invalid block request."
+    );
+  }
 
-  const ref = await addDoc(blocksRef, {
+  if (blockerId === blockedId) {
+    throw new Error(
+      "You cannot block yourself."
+    );
+  }
+
+  const blockRef =
+    getBlockReference(
+      blockerId,
+      blockedId
+    );
+
+  await setDoc(blockRef, {
     blockerId,
     blockedId,
-    createdAt: serverTimestamp(),
+    createdAt:
+      serverTimestamp(),
   });
 
-  return ref.id;
+  /*
+   * Return the full Firestore path.
+   * Existing UI can still treat this as an opaque string.
+   */
+  return blockRef.path;
 }
 
 export async function getMyBlockOfUser(
   userId: string,
   otherUserId: string
 ): Promise<string | null> {
-  const blocksRef = collection(db, "blocks");
+  const blockRef =
+    getBlockReference(
+      userId,
+      otherUserId
+    );
 
-  const q = query(
-    blocksRef,
-    where("blockerId", "==", userId),
-    where("blockedId", "==", otherUserId)
-  );
+  const snapshot =
+    await getDoc(blockRef);
 
-  const snapshot = await getDocs(q);
+  if (!snapshot.exists()) {
+    return null;
+  }
 
-  return snapshot.empty ? null : snapshot.docs[0].id;
+  return blockRef.path;
 }
 
-export async function unblockUser(blockDocId: string): Promise<void> {
-  const blockRef = doc(db, "blocks", blockDocId);
+export async function unblockUser(
+  blockDocumentPath: string
+): Promise<void> {
+  /*
+   * New block functions return a full path such as:
+   *
+   * blocks/UID_A/blockedUsers/UID_B
+   *
+   * The fallback also keeps this helper tolerant of an
+   * old random block document ID during development.
+   */
+  const blockRef =
+    blockDocumentPath.includes("/")
+      ? doc(
+          db,
+          blockDocumentPath
+        )
+      : doc(
+          db,
+          "blocks",
+          blockDocumentPath
+        );
+
   await deleteDoc(blockRef);
 }
 
@@ -694,24 +1342,28 @@ export async function isBlockedEitherWay(
   userId: string,
   otherUserId: string
 ): Promise<boolean> {
-  const blocksRef = collection(db, "blocks");
+  const firstDirection =
+    getBlockReference(
+      userId,
+      otherUserId
+    );
 
-  const [asBlocker, asBlocked] = await Promise.all([
-    getDocs(
-      query(
-        blocksRef,
-        where("blockerId", "==", userId),
-        where("blockedId", "==", otherUserId)
-      )
-    ),
-    getDocs(
-      query(
-        blocksRef,
-        where("blockerId", "==", otherUserId),
-        where("blockedId", "==", userId)
-      )
-    ),
+  const secondDirection =
+    getBlockReference(
+      otherUserId,
+      userId
+    );
+
+  const [
+    firstSnapshot,
+    secondSnapshot,
+  ] = await Promise.all([
+    getDoc(firstDirection),
+    getDoc(secondDirection),
   ]);
 
-  return !asBlocker.empty || !asBlocked.empty;
+  return (
+    firstSnapshot.exists() ||
+    secondSnapshot.exists()
+  );
 }

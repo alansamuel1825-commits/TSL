@@ -1,0 +1,978 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================
+    // HELPERS
+    // =========================================================
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userExists(userId) {
+      return exists(
+        /databases/$(database)/documents/users/$(userId)
+      );
+    }
+
+    function userDoc(userId) {
+      return get(
+        /databases/$(database)/documents/users/$(userId)
+      );
+    }
+
+    function hasCurrentUser() {
+      return signedIn()
+        && userExists(request.auth.uid);
+    }
+
+    function isAdmin() {
+      return hasCurrentUser()
+        && userDoc(request.auth.uid).data.isAdmin == true;
+    }
+
+    function isActiveUser() {
+      return hasCurrentUser()
+        && userDoc(request.auth.uid).data.status == 'active';
+    }
+
+    function isStudent() {
+      return isActiveUser()
+        && userDoc(request.auth.uid).data.role == 'student';
+    }
+
+    function isAlumni() {
+      return hasCurrentUser()
+        && userDoc(request.auth.uid).data.role == 'alumni';
+    }
+
+    function alumniProfileExists(userId) {
+      return exists(
+        /databases/$(database)/documents/alumniProfiles/$(userId)
+      );
+    }
+
+    function isStudentId(userId) {
+      return userExists(userId)
+        && userDoc(userId).data.role == 'student'
+        && userDoc(userId).data.status == 'active';
+    }
+
+    function isVerifiedAlumni() {
+      return isAlumni()
+        && isActiveUser()
+        && alumniProfileExists(request.auth.uid)
+        && get(
+          /databases/$(database)/documents/alumniProfiles/$(request.auth.uid)
+        ).data.verificationStatus == 'verified';
+    }
+
+    function isVerifiedAlumniId(userId) {
+      return userExists(userId)
+        && userDoc(userId).data.role == 'alumni'
+        && userDoc(userId).data.status == 'active'
+        && alumniProfileExists(userId)
+        && get(
+          /databases/$(database)/documents/alumniProfiles/$(userId)
+        ).data.verificationStatus == 'verified';
+    }
+
+    function alumniAcceptsMentorship(userId) {
+      return isVerifiedAlumniId(userId)
+        && get(
+          /databases/$(database)/documents/alumniProfiles/$(userId)
+        ).data.mentorshipAvailable == true;
+    }
+
+    function conversationExists(conversationId) {
+      return exists(
+        /databases/$(database)/documents/conversations/$(conversationId)
+      );
+    }
+
+    function conversationDoc(conversationId) {
+      return get(
+        /databases/$(database)/documents/conversations/$(conversationId)
+      );
+    }
+
+    function isConversationParticipant(conversationId) {
+      return signedIn()
+        && conversationExists(conversationId)
+        && (
+          conversationDoc(conversationId).data.studentId
+            == request.auth.uid
+          ||
+          conversationDoc(conversationId).data.alumniId
+            == request.auth.uid
+        );
+    }
+
+    function blockedEitherWay(userA, userB) {
+      return exists(
+        /databases/$(database)/documents/blocks/$(userA)/blockedUsers/$(userB)
+      )
+      ||
+      exists(
+        /databases/$(database)/documents/blocks/$(userB)/blockedUsers/$(userA)
+      );
+    }
+
+    function requestAfterMatchesConversation(
+      requestId,
+      studentId,
+      alumniId
+    ) {
+      let requestAfter = getAfter(
+        /databases/$(database)/documents/mentorshipRequests/$(requestId)
+      );
+
+      return requestAfter.data.status == 'accepted'
+        && requestAfter.data.studentId == studentId
+        && requestAfter.data.alumniId == alumniId;
+    }
+
+    function conversationAfterMatchesRequest(
+      requestId,
+      studentId,
+      alumniId
+    ) {
+      let conversationAfter = getAfter(
+        /databases/$(database)/documents/conversations/$(requestId)
+      );
+
+      return conversationAfter.data.studentId == studentId
+        && conversationAfter.data.alumniId == alumniId
+        && conversationAfter.data.mentorshipRequestId == requestId;
+    }
+
+
+    // =========================================================
+    // USERS
+    // =========================================================
+
+    match /users/{userId} {
+
+      /*
+       * TEMPORARY compatibility rule.
+       *
+       * The current app reads /users to display participant names.
+       * Later we will move public-facing identity data into public
+       * profiles so email/account metadata no longer needs this
+       * broad read permission.
+       */
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && request.auth.uid == userId
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'email',
+          'displayName',
+          'role',
+          'status',
+          'photoURL',
+          'isAdmin',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'email',
+          'displayName',
+          'role',
+          'status',
+          'isAdmin'
+        ])
+
+        && request.resource.data.uid == request.auth.uid
+
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string
+
+        && request.resource.data.isAdmin == false
+
+        && (
+          (
+            request.resource.data.role == 'student'
+            && request.resource.data.status == 'active'
+          )
+          ||
+          (
+            request.resource.data.role == 'alumni'
+            && request.resource.data.status == 'pending'
+          )
+        );
+
+      /*
+       * Ordinary users cannot alter:
+       *
+       * uid
+       * email
+       * role
+       * status
+       * isAdmin
+       * createdAt
+       */
+      allow update: if signedIn()
+        && request.auth.uid == userId
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'displayName',
+            'photoURL',
+            'updatedAt'
+          ]);
+
+      /*
+       * Admin may activate/pending an account as part of
+       * alumni verification.
+       *
+       * Admin cannot grant isAdmin through the client.
+       */
+      allow update: if isAdmin()
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'status',
+            'updatedAt'
+          ])
+
+        && request.resource.data.status
+          in ['active', 'pending'];
+
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================================
+    // STUDENT PROFILES
+    // =========================================================
+
+    match /studentProfiles/{userId} {
+
+      allow read: if signedIn()
+        && (
+          request.auth.uid == userId
+          || isAdmin()
+        );
+
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && isStudent()
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'name',
+          'graduationYear',
+          'interests',
+          'bio',
+          'profileCompleted',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'name',
+          'graduationYear',
+          'interests',
+          'bio',
+          'profileCompleted'
+        ])
+
+        && request.resource.data.uid == request.auth.uid
+
+        && request.resource.data.name is string
+        && request.resource.data.graduationYear is string
+        && request.resource.data.interests is list
+        && request.resource.data.bio is string
+
+        && request.resource.data.profileCompleted == true;
+
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && isStudent()
+
+        && request.resource.data.uid == resource.data.uid
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'name',
+            'graduationYear',
+            'interests',
+            'bio',
+            'profileCompleted',
+            'updatedAt'
+          ]);
+
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================================
+    // ALUMNI PROFILES
+    // =========================================================
+
+    match /alumniProfiles/{userId} {
+
+      /*
+       * Verified alumni are visible to signed-in users.
+       *
+       * Pending/rejected profiles remain visible only to their
+       * owner and admins.
+       */
+      allow read: if signedIn()
+        && (
+          resource.data.verificationStatus == 'verified'
+          || request.auth.uid == userId
+          || isAdmin()
+        );
+
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && isAlumni()
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'name',
+          'graduationYear',
+          'university',
+          'degree',
+          'field',
+          'currentRole',
+          'company',
+          'expertise',
+          'bio',
+          'mentorshipAvailable',
+          'verificationStatus',
+          'profileCompleted',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'name',
+          'graduationYear',
+          'university',
+          'degree',
+          'field',
+          'currentRole',
+          'company',
+          'expertise',
+          'bio',
+          'mentorshipAvailable',
+          'verificationStatus'
+        ])
+
+        && request.resource.data.uid == request.auth.uid
+
+        && request.resource.data.name is string
+        && request.resource.data.graduationYear is string
+        && request.resource.data.university is string
+        && request.resource.data.degree is string
+        && request.resource.data.field is string
+        && request.resource.data.currentRole is string
+        && request.resource.data.company is string
+        && request.resource.data.expertise is list
+        && request.resource.data.bio is string
+        && request.resource.data.mentorshipAvailable is bool
+
+        && request.resource.data.verificationStatus == 'pending';
+
+      /*
+       * Alumni may edit profile information.
+       *
+       * They CANNOT change verificationStatus themselves.
+       */
+      allow update: if signedIn()
+        && request.auth.uid == userId
+        && isAlumni()
+
+        && request.resource.data.uid == resource.data.uid
+
+        && request.resource.data.verificationStatus
+          == resource.data.verificationStatus
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'name',
+            'graduationYear',
+            'university',
+            'degree',
+            'field',
+            'currentRole',
+            'company',
+            'expertise',
+            'bio',
+            'mentorshipAvailable',
+            'profileCompleted',
+            'updatedAt'
+          ]);
+
+      /*
+       * Verification is admin-only.
+       */
+      allow update: if isAdmin()
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'verificationStatus',
+            'updatedAt'
+          ])
+
+        && request.resource.data.verificationStatus
+          in [
+            'pending',
+            'verified',
+            'rejected'
+          ];
+
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================================
+    // MENTORSHIP REQUESTS
+    // =========================================================
+
+    match /mentorshipRequests/{requestId} {
+
+      /*
+       * Only a real active student may create the request.
+       *
+       * Target must be:
+       * - an alumni account
+       * - active
+       * - verified
+       * - accepting mentorship
+       */
+      allow create: if signedIn()
+        && isStudent()
+
+        && request.resource.data.keys().hasOnly([
+          'studentId',
+          'alumniId',
+          'message',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'studentId',
+          'alumniId',
+          'message',
+          'status'
+        ])
+
+        && request.resource.data.studentId == request.auth.uid
+
+        && request.resource.data.alumniId is string
+
+        && request.resource.data.alumniId != request.auth.uid
+
+        && alumniAcceptsMentorship(
+          request.resource.data.alumniId
+        )
+
+        && request.resource.data.message is string
+
+        && request.resource.data.message.size() > 0
+        && request.resource.data.message.size() <= 2000
+
+        && request.resource.data.status == 'pending';
+
+      allow read: if signedIn()
+        && (
+          resource.data.studentId == request.auth.uid
+          || resource.data.alumniId == request.auth.uid
+          || isAdmin()
+        );
+
+      /*
+       * ACCEPT
+       *
+       * This is the key security improvement.
+       *
+       * The accepted request is only valid if the SAME atomic
+       * operation results in:
+       *
+       * conversations/{requestId}
+       *
+       * with matching student/alumni/request IDs.
+       */
+      allow update: if isVerifiedAlumni()
+
+        && resource.data.alumniId == request.auth.uid
+
+        && resource.data.status == 'pending'
+
+        && request.resource.data.status == 'accepted'
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'status',
+            'updatedAt'
+          ])
+
+        && conversationAfterMatchesRequest(
+          requestId,
+          resource.data.studentId,
+          resource.data.alumniId
+        );
+
+      /*
+       * DECLINE
+       */
+      allow update: if isVerifiedAlumni()
+
+        && resource.data.alumniId == request.auth.uid
+
+        && resource.data.status == 'pending'
+
+        && request.resource.data.status == 'declined'
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'status',
+            'updatedAt'
+          ]);
+
+      /*
+       * CANCEL
+       */
+      allow update: if isStudent()
+
+        && resource.data.studentId == request.auth.uid
+
+        && resource.data.status == 'pending'
+
+        && request.resource.data.status == 'cancelled'
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'status',
+            'updatedAt'
+          ]);
+
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================================
+    // CONVERSATIONS
+    // =========================================================
+
+    match /conversations/{conversationId} {
+
+      allow read: if signedIn()
+        && (
+          resource.data.studentId == request.auth.uid
+          || resource.data.alumniId == request.auth.uid
+          || isAdmin()
+        );
+
+      /*
+       * A conversation may ONLY be created by the verified
+       * alumni involved in the mentorship.
+       *
+       * conversationId MUST equal mentorshipRequestId.
+       *
+       * The corresponding mentorship request must be accepted.
+       */
+      allow create: if isVerifiedAlumni()
+
+        && request.resource.data.keys().hasOnly([
+          'studentId',
+          'alumniId',
+          'mentorshipRequestId',
+          'createdAt',
+          'lastMessage',
+          'lastMessageAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'studentId',
+          'alumniId',
+          'mentorshipRequestId'
+        ])
+
+        && request.resource.data.studentId is string
+        && request.resource.data.alumniId is string
+        && request.resource.data.mentorshipRequestId is string
+
+        && request.resource.data.alumniId == request.auth.uid
+
+        && request.resource.data.studentId
+          != request.resource.data.alumniId
+
+        && isStudentId(
+          request.resource.data.studentId
+        )
+
+        && conversationId
+          == request.resource.data.mentorshipRequestId
+
+        && requestAfterMatchesConversation(
+          conversationId,
+          request.resource.data.studentId,
+          request.resource.data.alumniId
+        )
+
+        && !blockedEitherWay(
+          request.resource.data.studentId,
+          request.resource.data.alumniId
+        );
+
+      /*
+       * Participants can ONLY update chat preview metadata.
+       *
+       * studentId, alumniId and mentorshipRequestId are immutable.
+       */
+      allow update: if signedIn()
+        && isActiveUser()
+
+        && (
+          resource.data.studentId == request.auth.uid
+          || resource.data.alumniId == request.auth.uid
+        )
+
+        && !blockedEitherWay(
+          resource.data.studentId,
+          resource.data.alumniId
+        )
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'lastMessage',
+            'lastMessageAt'
+          ])
+
+        && request.resource.data.lastMessage is string
+
+        && request.resource.data.lastMessage.size() <= 2000;
+
+      allow delete: if isAdmin();
+
+
+      // =======================================================
+      // MESSAGES
+      // =======================================================
+
+      match /messages/{messageId} {
+
+        /*
+         * Blocking does NOT erase historical messages.
+         * Participants may still read their existing conversation.
+         */
+        allow read: if signedIn()
+          && (
+            isConversationParticipant(conversationId)
+            || isAdmin()
+          );
+
+        /*
+         * Database-level block enforcement.
+         *
+         * Even if somebody bypasses the UI and calls Firestore
+         * directly, message creation is refused when either user
+         * has blocked the other.
+         */
+        allow create: if signedIn()
+          && isActiveUser()
+
+          && isConversationParticipant(conversationId)
+
+          && !blockedEitherWay(
+            conversationDoc(conversationId).data.studentId,
+            conversationDoc(conversationId).data.alumniId
+          )
+
+          && request.resource.data.keys().hasOnly([
+            'senderId',
+            'text',
+            'createdAt'
+          ])
+
+          && request.resource.data.keys().hasAll([
+            'senderId',
+            'text'
+          ])
+
+          && request.resource.data.senderId == request.auth.uid
+
+          && request.resource.data.text is string
+
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000;
+
+        /*
+         * Sent messages are immutable for ordinary users.
+         */
+        allow update, delete: if isAdmin();
+      }
+    }
+
+
+    // =========================================================
+    // ASK AN ALUMNI
+    // =========================================================
+
+    match /questions/{questionId} {
+
+      /*
+       * Students, verified alumni and admins may access Q&A.
+       *
+       * Pending alumni are deliberately excluded.
+       */
+      allow read: if
+        isStudent()
+        || isVerifiedAlumni()
+        || isAdmin();
+
+      allow create: if isStudent()
+
+        && request.resource.data.keys().hasOnly([
+          'studentId',
+          'studentName',
+          'questionText',
+          'status',
+          'createdAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'studentId',
+          'studentName',
+          'questionText',
+          'status'
+        ])
+
+        && request.resource.data.studentId == request.auth.uid
+
+        && request.resource.data.studentName is string
+
+        && request.resource.data.questionText is string
+
+        && request.resource.data.questionText.size() > 0
+        && request.resource.data.questionText.size() <= 3000
+
+        && request.resource.data.status == 'open';
+
+      /*
+       * ONLY a verified alumnus may answer.
+       */
+      allow update: if isVerifiedAlumni()
+
+        && resource.data.status == 'open'
+
+        && request.resource.data.status == 'answered'
+
+        && request.resource.data.answererId == request.auth.uid
+
+        && request.resource.data.answererName is string
+
+        && request.resource.data.answerText is string
+
+        && request.resource.data.answerText.size() > 0
+        && request.resource.data.answerText.size() <= 5000
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'status',
+            'answererId',
+            'answererName',
+            'answerText',
+            'answeredAt'
+          ]);
+
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================================
+    // REPORTS
+    // =========================================================
+
+    match /reports/{reportId} {
+
+      allow create: if signedIn()
+
+        && request.resource.data.keys().hasOnly([
+          'conversationId',
+          'reporterId',
+          'reporterName',
+          'reportedUserId',
+          'reportedUserName',
+          'reason',
+          'status',
+          'createdAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'conversationId',
+          'reporterId',
+          'reporterName',
+          'reportedUserId',
+          'reportedUserName',
+          'reason',
+          'status'
+        ])
+
+        && request.resource.data.reporterId == request.auth.uid
+
+        && request.resource.data.conversationId is string
+
+        && conversationExists(
+          request.resource.data.conversationId
+        )
+
+        && isConversationParticipant(
+          request.resource.data.conversationId
+        )
+
+        && request.resource.data.reportedUserId is string
+
+        && request.resource.data.reportedUserId
+          != request.auth.uid
+
+        && (
+          request.resource.data.reportedUserId
+            == conversationDoc(
+              request.resource.data.conversationId
+            ).data.studentId
+
+          ||
+
+          request.resource.data.reportedUserId
+            == conversationDoc(
+              request.resource.data.conversationId
+            ).data.alumniId
+        )
+
+        && request.resource.data.reporterName is string
+
+        && request.resource.data.reportedUserName is string
+
+        && request.resource.data.reason is string
+
+        && request.resource.data.reason.size() > 0
+        && request.resource.data.reason.size() <= 2000
+
+        && request.resource.data.status == 'open';
+
+      allow read: if isAdmin();
+
+      allow update: if isAdmin()
+
+        && request.resource.data.status
+          in ['open', 'resolved']
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'status',
+            'resolvedAt'
+          ]);
+
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================================
+    // BLOCKING
+    // =========================================================
+
+    /*
+     * New structure:
+     *
+     * blocks/{blockerId}/blockedUsers/{blockedId}
+     */
+    match /blocks/{blockerId}/blockedUsers/{blockedId} {
+
+      allow create: if signedIn()
+
+        && request.auth.uid == blockerId
+
+        && blockerId != blockedId
+
+        && userExists(blockedId)
+
+        && request.resource.data.keys().hasOnly([
+          'blockerId',
+          'blockedId',
+          'createdAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'blockerId',
+          'blockedId'
+        ])
+
+        && request.resource.data.blockerId == blockerId
+
+        && request.resource.data.blockedId == blockedId;
+
+      /*
+       * Both sides may determine that the block exists.
+       * Admin may inspect it for safety/moderation.
+       */
+      allow read: if signedIn()
+        && (
+          request.auth.uid == blockerId
+          || request.auth.uid == blockedId
+          || isAdmin()
+        );
+
+      /*
+       * Only the blocker may unblock.
+       * Admin can also remove a block for moderation if required.
+       */
+      allow delete: if signedIn()
+        && (
+          request.auth.uid == blockerId
+          || isAdmin()
+        );
+
+      /*
+       * Block documents are immutable.
+       */
+      allow update: if false;
+    }
+
+
+    // =========================================================
+    // DEFAULT DENY
+    // =========================================================
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
