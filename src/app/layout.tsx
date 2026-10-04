@@ -1,7 +1,18 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import type {
+  Metadata,
+} from "next";
+import type {
+  ReactNode,
+} from "react";
+import {
+  Geist,
+  Geist_Mono,
+} from "next/font/google";
+
 import "./globals.css";
 
+import AuthGate from "@/components/auth/AuthGate";
+import Footer from "@/components/navigation/Footer";
 import Navbar from "@/components/navigation/Navbar";
 
 const geistSans = Geist({
@@ -15,19 +26,36 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TSL Alumni Connect",
-  description: "Connecting TSL students and alumni.",
+  title: {
+    default:
+      "The Study Alumni Connect",
+    template:
+      "%s | The Study Alumni Connect",
+  },
+  description:
+    "A school-community platform connecting current students with verified alumni of The Study L'école Internationale.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: {
+  children: ReactNode;
+}) {
   return (
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="flex min-h-full flex-col bg-[#fbfcff] text-slate-950">
         <Navbar />
-        {children}
+
+        <div className="flex-1">
+          <AuthGate>
+            {children}
+          </AuthGate>
+        </div>
+
+        <Footer />
       </body>
     </html>
   );

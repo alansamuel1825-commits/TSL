@@ -11,6 +11,11 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function emailVerified() {
+      return signedIn()
+        && request.auth.token.email_verified == true;
+    }
+
     function userExists(userId) {
       return exists(
         /databases/$(database)/documents/users/$(userId)
@@ -23,8 +28,37 @@ service cloud.firestore {
       );
     }
 
+    function userAfterDoc(userId) {
+      return getAfter(
+        /databases/$(database)/documents/users/$(userId)
+      );
+    }
+
+    function isStudentAfter(userId) {
+      return userAfterDoc(userId).data.role == 'student'
+        && userAfterDoc(userId).data.status == 'active';
+    }
+
+    function isAlumniAfter(userId) {
+      return userAfterDoc(userId).data.role == 'alumni'
+        && userAfterDoc(userId).data.status == 'pending';
+    }
+
+    function publicAfterMatchesUserIdentity(userId) {
+      let publicAfter = getAfter(
+        /databases/$(database)/documents/publicProfiles/$(userId)
+      );
+
+      let userAfter = userAfterDoc(userId);
+
+      return publicAfter.data.uid == userId
+        && publicAfter.data.displayName == userAfter.data.displayName
+        && publicAfter.data.role == userAfter.data.role
+        && publicAfter.data.photoURL == userAfter.data.photoURL;
+    }
+
     function hasCurrentUser() {
-      return signedIn()
+      return emailVerified()
         && userExists(request.auth.uid);
     }
 
@@ -46,6 +80,25 @@ service cloud.firestore {
     function isAlumni() {
       return hasCurrentUser()
         && userDoc(request.auth.uid).data.role == 'alumni';
+    }
+
+    function validRequiredString(value, maxLength) {
+      return value is string
+        && value.size() > 0
+        && value.size() <= maxLength;
+    }
+
+    function validOptionalString(value, maxLength) {
+      return value is string
+        && value.size() <= maxLength;
+    }
+
+    function validPhotoURL(value) {
+      return value == null
+        || (
+          value is string
+          && value.size() <= 2048
+        );
     }
 
     function alumniProfileExists(userId) {
@@ -99,14 +152,12 @@ service cloud.firestore {
     }
 
     function isConversationParticipant(conversationId) {
-      return signedIn()
+      return emailVerified()
         && conversationExists(conversationId)
         && (
-          conversationDoc(conversationId).data.studentId
-            == request.auth.uid
+          conversationDoc(conversationId).data.studentId == request.auth.uid
           ||
-          conversationDoc(conversationId).data.alumniId
-            == request.auth.uid
+          conversationDoc(conversationId).data.alumniId == request.auth.uid
         );
     }
 
@@ -148,24 +199,69 @@ service cloud.firestore {
         && conversationAfter.data.mentorshipRequestId == requestId;
     }
 
+    function userAfterMatchesAlumniVerification(
+      userId,
+      verificationStatus
+    ) {
+      let userAfter = getAfter(
+        /databases/$(database)/documents/users/$(userId)
+      );
+
+      return userAfter.data.role == 'alumni'
+        && (
+          (
+            verificationStatus == 'verified'
+            && userAfter.data.status == 'active'
+          )
+          ||
+          (
+            verificationStatus in ['pending', 'rejected']
+            && userAfter.data.status == 'pending'
+          )
+        );
+    }
+
+    function alumniAfterMatchesUserStatus(
+      userId,
+      accountStatus
+    ) {
+      let alumniAfter = getAfter(
+        /databases/$(database)/documents/alumniProfiles/$(userId)
+      );
+
+      return (
+        accountStatus == 'active'
+        && alumniAfter.data.verificationStatus == 'verified'
+      )
+      ||
+      (
+        accountStatus == 'pending'
+        && alumniAfter.data.verificationStatus in ['pending', 'rejected']
+      );
+    }
+
 
     // =========================================================
-    // USERS
+    // USERS (PRIVATE ACCOUNT DATA)
     // =========================================================
 
     match /users/{userId} {
 
       /*
-       * TEMPORARY compatibility rule.
-       *
-       * The current app reads /users to display participant names.
-       * Later we will move public-facing identity data into public
-       * profiles so email/account metadata no longer needs this
-       * broad read permission.
+       * Private account documents contain email/status/admin data.
+       * Only the owner and school-approved admins may read them.
        */
-      allow read: if signedIn();
+      allow read: if hasCurrentUser()
+        && (
+          request.auth.uid == userId
+          || isAdmin()
+        );
 
-      allow create: if signedIn()
+      /*
+       * Account creation must atomically create the matching
+       * publicProfiles document.
+       */
+      allow create: if emailVerified()
         && request.auth.uid == userId
 
         && request.resource.data.keys().hasOnly([
@@ -186,15 +282,30 @@ service cloud.firestore {
           'displayName',
           'role',
           'status',
-          'isAdmin'
+          'photoURL',
+          'isAdmin',
+          'createdAt',
+          'updatedAt'
         ])
 
         && request.resource.data.uid == request.auth.uid
 
-        && request.resource.data.email is string
-        && request.resource.data.displayName is string
+        && request.auth.token.email is string
+        && request.resource.data.email == request.auth.token.email
+
+        && validRequiredString(
+          request.resource.data.displayName,
+          100
+        )
+
+        && validPhotoURL(
+          request.resource.data.photoURL
+        )
 
         && request.resource.data.isAdmin == false
+
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
 
         && (
           (
@@ -206,19 +317,15 @@ service cloud.firestore {
             request.resource.data.role == 'alumni'
             && request.resource.data.status == 'pending'
           )
-        );
+        )
+
+        && publicAfterMatchesUserIdentity(userId);
 
       /*
-       * Ordinary users cannot alter:
-       *
-       * uid
-       * email
-       * role
-       * status
-       * isAdmin
-       * createdAt
+       * Ordinary identity edits must atomically keep publicProfiles
+       * synchronized. Role/status/admin/email remain protected.
        */
-      allow update: if signedIn()
+      allow update: if hasCurrentUser()
         && request.auth.uid == userId
 
         && request.resource.data
@@ -228,15 +335,29 @@ service cloud.firestore {
             'displayName',
             'photoURL',
             'updatedAt'
-          ]);
+          ])
+
+        && validRequiredString(
+          request.resource.data.displayName,
+          100
+        )
+
+        && validPhotoURL(
+          request.resource.data.photoURL
+        )
+
+        && request.resource.data.updatedAt == request.time
+
+        && publicAfterMatchesUserIdentity(userId);
 
       /*
-       * Admin may activate/pending an account as part of
-       * alumni verification.
-       *
-       * Admin cannot grant isAdmin through the client.
+       * Admin account-status changes are restricted to alumni and
+       * must stay synchronized with alumni verification.
+       * isAdmin itself can never be granted through client rules.
        */
       allow update: if isAdmin()
+
+        && resource.data.role == 'alumni'
 
         && request.resource.data
           .diff(resource.data)
@@ -247,7 +368,155 @@ service cloud.firestore {
           ])
 
         && request.resource.data.status
-          in ['active', 'pending'];
+          in ['active', 'pending']
+
+        && request.resource.data.updatedAt == request.time
+
+        && alumniAfterMatchesUserStatus(
+          userId,
+          request.resource.data.status
+        );
+
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================================
+    // PUBLIC DISPLAY PROFILES
+    // =========================================================
+
+    match /publicProfiles/{userId} {
+
+      /*
+       * Safe cross-user identity: no email, admin flag or status.
+       * Any verified-email platform member may read it.
+       */
+      allow read: if hasCurrentUser();
+
+      allow create: if emailVerified()
+        && request.auth.uid == userId
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'role',
+          'photoURL',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'displayName',
+          'role',
+          'photoURL',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.uid == userId
+
+        && validRequiredString(
+          request.resource.data.displayName,
+          100
+        )
+
+        && request.resource.data.role
+          in ['student', 'alumni']
+
+        && validPhotoURL(
+          request.resource.data.photoURL
+        )
+
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+
+        && publicAfterMatchesUserIdentity(userId);
+
+      /*
+       * Owners may update only public display identity, and it
+       * must match the private /users document after the batch.
+       */
+      allow update: if hasCurrentUser()
+        && request.auth.uid == userId
+
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.role == resource.data.role
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'displayName',
+            'photoURL',
+            'updatedAt'
+          ])
+
+        && validRequiredString(
+          request.resource.data.displayName,
+          100
+        )
+
+        && validPhotoURL(
+          request.resource.data.photoURL
+        )
+
+        && request.resource.data.updatedAt == request.time
+
+        && publicAfterMatchesUserIdentity(userId);
+
+      /*
+       * Admin-only compatibility path for one-time legacy backfill.
+       * Data must exactly match the existing private user identity.
+       */
+      allow create: if isAdmin()
+        && userExists(userId)
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'role',
+          'photoURL',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.uid == userId
+
+        && request.resource.data.displayName
+          == userDoc(userId).data.displayName
+
+        && request.resource.data.role
+          == userDoc(userId).data.role
+
+        && request.resource.data.photoURL
+          == userDoc(userId).data.photoURL
+
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && userExists(userId)
+
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.role == resource.data.role
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'displayName',
+            'photoURL',
+            'updatedAt'
+          ])
+
+        && request.resource.data.displayName
+          == userDoc(userId).data.displayName
+
+        && request.resource.data.photoURL
+          == userDoc(userId).data.photoURL
+
+        && request.resource.data.updatedAt == request.time;
 
       allow delete: if isAdmin();
     }
@@ -259,15 +528,15 @@ service cloud.firestore {
 
     match /studentProfiles/{userId} {
 
-      allow read: if signedIn()
+      allow read: if emailVerified()
         && (
           request.auth.uid == userId
           || isAdmin()
         );
 
-      allow create: if signedIn()
+      allow create: if emailVerified()
         && request.auth.uid == userId
-        && isStudent()
+        && isStudentAfter(userId)
 
         && request.resource.data.keys().hasOnly([
           'uid',
@@ -286,23 +555,42 @@ service cloud.firestore {
           'graduationYear',
           'interests',
           'bio',
-          'profileCompleted'
+          'profileCompleted',
+          'createdAt',
+          'updatedAt'
         ])
 
         && request.resource.data.uid == request.auth.uid
 
-        && request.resource.data.name is string
-        && request.resource.data.graduationYear is string
+        && validRequiredString(
+          request.resource.data.name,
+          100
+        )
+
+        && validRequiredString(
+          request.resource.data.graduationYear,
+          20
+        )
+
         && request.resource.data.interests is list
-        && request.resource.data.bio is string
+        && request.resource.data.interests.size() <= 20
 
-        && request.resource.data.profileCompleted == true;
+        && validOptionalString(
+          request.resource.data.bio,
+          2000
+        )
 
-      allow update: if signedIn()
+        && request.resource.data.profileCompleted == true
+
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if isStudent()
         && request.auth.uid == userId
-        && isStudent()
 
         && request.resource.data.uid == resource.data.uid
+        && request.resource.data.profileCompleted
+          == resource.data.profileCompleted
 
         && request.resource.data
           .diff(resource.data)
@@ -312,9 +600,28 @@ service cloud.firestore {
             'graduationYear',
             'interests',
             'bio',
-            'profileCompleted',
             'updatedAt'
-          ]);
+          ])
+
+        && validRequiredString(
+          request.resource.data.name,
+          100
+        )
+
+        && validRequiredString(
+          request.resource.data.graduationYear,
+          20
+        )
+
+        && request.resource.data.interests is list
+        && request.resource.data.interests.size() <= 20
+
+        && validOptionalString(
+          request.resource.data.bio,
+          2000
+        )
+
+        && request.resource.data.updatedAt == request.time;
 
       allow delete: if isAdmin();
     }
@@ -327,21 +634,22 @@ service cloud.firestore {
     match /alumniProfiles/{userId} {
 
       /*
-       * Verified alumni are visible to signed-in users.
-       *
-       * Pending/rejected profiles remain visible only to their
-       * owner and admins.
+       * Verified profiles are visible to active community members.
+       * Pending/rejected profiles remain owner/admin-only.
        */
-      allow read: if signedIn()
+      allow read: if emailVerified()
         && (
-          resource.data.verificationStatus == 'verified'
+          (
+            resource.data.verificationStatus == 'verified'
+            && hasCurrentUser()
+          )
           || request.auth.uid == userId
           || isAdmin()
         );
 
-      allow create: if signedIn()
+      allow create: if emailVerified()
         && request.auth.uid == userId
-        && isAlumni()
+        && isAlumniAfter(userId)
 
         && request.resource.data.keys().hasOnly([
           'uid',
@@ -373,32 +681,74 @@ service cloud.firestore {
           'expertise',
           'bio',
           'mentorshipAvailable',
-          'verificationStatus'
+          'verificationStatus',
+          'createdAt',
+          'updatedAt'
         ])
 
         && request.resource.data.uid == request.auth.uid
 
-        && request.resource.data.name is string
-        && request.resource.data.graduationYear is string
-        && request.resource.data.university is string
-        && request.resource.data.degree is string
-        && request.resource.data.field is string
-        && request.resource.data.currentRole is string
-        && request.resource.data.company is string
+        && validRequiredString(
+          request.resource.data.name,
+          100
+        )
+
+        && validRequiredString(
+          request.resource.data.graduationYear,
+          20
+        )
+
+        && validOptionalString(
+          request.resource.data.university,
+          150
+        )
+
+        && validOptionalString(
+          request.resource.data.degree,
+          150
+        )
+
+        && validOptionalString(
+          request.resource.data.field,
+          150
+        )
+
+        && validOptionalString(
+          request.resource.data.currentRole,
+          150
+        )
+
+        && validOptionalString(
+          request.resource.data.company,
+          150
+        )
+
         && request.resource.data.expertise is list
-        && request.resource.data.bio is string
+        && request.resource.data.expertise.size() <= 20
+
+        && validOptionalString(
+          request.resource.data.bio,
+          3000
+        )
+
         && request.resource.data.mentorshipAvailable is bool
 
-        && request.resource.data.verificationStatus == 'pending';
+        && request.resource.data.verificationStatus == 'pending'
+
+        && (
+          !('profileCompleted' in request.resource.data)
+          || request.resource.data.profileCompleted == true
+        )
+
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
 
       /*
-       * Alumni may edit profile information.
-       *
-       * They CANNOT change verificationStatus themselves.
+       * Alumni can edit profile information but never their own
+       * verification status or UID.
        */
-      allow update: if signedIn()
+      allow update: if isAlumni()
         && request.auth.uid == userId
-        && isAlumni()
 
         && request.resource.data.uid == resource.data.uid
 
@@ -419,12 +769,58 @@ service cloud.firestore {
             'expertise',
             'bio',
             'mentorshipAvailable',
-            'profileCompleted',
             'updatedAt'
-          ]);
+          ])
+
+        && validRequiredString(
+          request.resource.data.name,
+          100
+        )
+
+        && validRequiredString(
+          request.resource.data.graduationYear,
+          20
+        )
+
+        && validOptionalString(
+          request.resource.data.university,
+          150
+        )
+
+        && validOptionalString(
+          request.resource.data.degree,
+          150
+        )
+
+        && validOptionalString(
+          request.resource.data.field,
+          150
+        )
+
+        && validOptionalString(
+          request.resource.data.currentRole,
+          150
+        )
+
+        && validOptionalString(
+          request.resource.data.company,
+          150
+        )
+
+        && request.resource.data.expertise is list
+        && request.resource.data.expertise.size() <= 20
+
+        && validOptionalString(
+          request.resource.data.bio,
+          3000
+        )
+
+        && request.resource.data.mentorshipAvailable is bool
+
+        && request.resource.data.updatedAt == request.time;
 
       /*
-       * Verification is admin-only.
+       * Verification is admin-only and synchronized with users.status.
        */
       allow update: if isAdmin()
 
@@ -441,7 +837,14 @@ service cloud.firestore {
             'pending',
             'verified',
             'rejected'
-          ];
+          ]
+
+        && request.resource.data.updatedAt == request.time
+
+        && userAfterMatchesAlumniVerification(
+          userId,
+          request.resource.data.verificationStatus
+        );
 
       allow delete: if isAdmin();
     }
@@ -453,17 +856,7 @@ service cloud.firestore {
 
     match /mentorshipRequests/{requestId} {
 
-      /*
-       * Only a real active student may create the request.
-       *
-       * Target must be:
-       * - an alumni account
-       * - active
-       * - verified
-       * - accepting mentorship
-       */
-      allow create: if signedIn()
-        && isStudent()
+      allow create: if isStudent()
 
         && request.resource.data.keys().hasOnly([
           'studentId',
@@ -478,7 +871,9 @@ service cloud.firestore {
           'studentId',
           'alumniId',
           'message',
-          'status'
+          'status',
+          'createdAt',
+          'updatedAt'
         ])
 
         && request.resource.data.studentId == request.auth.uid
@@ -491,14 +886,17 @@ service cloud.firestore {
           request.resource.data.alumniId
         )
 
-        && request.resource.data.message is string
+        && validRequiredString(
+          request.resource.data.message,
+          2000
+        )
 
-        && request.resource.data.message.size() > 0
-        && request.resource.data.message.size() <= 2000
+        && request.resource.data.status == 'pending'
 
-        && request.resource.data.status == 'pending';
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
 
-      allow read: if signedIn()
+      allow read: if hasCurrentUser()
         && (
           resource.data.studentId == request.auth.uid
           || resource.data.alumniId == request.auth.uid
@@ -506,16 +904,8 @@ service cloud.firestore {
         );
 
       /*
-       * ACCEPT
-       *
-       * This is the key security improvement.
-       *
-       * The accepted request is only valid if the SAME atomic
-       * operation results in:
-       *
-       * conversations/{requestId}
-       *
-       * with matching student/alumni/request IDs.
+       * ACCEPT: acceptance must atomically create the matching
+       * deterministic conversation.
        */
       allow update: if isVerifiedAlumni()
 
@@ -532,6 +922,8 @@ service cloud.firestore {
             'status',
             'updatedAt'
           ])
+
+        && request.resource.data.updatedAt == request.time
 
         && conversationAfterMatchesRequest(
           requestId,
@@ -556,7 +948,9 @@ service cloud.firestore {
           .hasOnly([
             'status',
             'updatedAt'
-          ]);
+          ])
+
+        && request.resource.data.updatedAt == request.time;
 
       /*
        * CANCEL
@@ -575,7 +969,9 @@ service cloud.firestore {
           .hasOnly([
             'status',
             'updatedAt'
-          ]);
+          ])
+
+        && request.resource.data.updatedAt == request.time;
 
       allow delete: if isAdmin();
     }
@@ -587,7 +983,7 @@ service cloud.firestore {
 
     match /conversations/{conversationId} {
 
-      allow read: if signedIn()
+      allow read: if emailVerified()
         && (
           resource.data.studentId == request.auth.uid
           || resource.data.alumniId == request.auth.uid
@@ -595,12 +991,8 @@ service cloud.firestore {
         );
 
       /*
-       * A conversation may ONLY be created by the verified
-       * alumni involved in the mentorship.
-       *
-       * conversationId MUST equal mentorshipRequestId.
-       *
-       * The corresponding mentorship request must be accepted.
+       * A conversation may only be created by the verified alumnus
+       * in the same atomic operation that accepts the request.
        */
       allow create: if isVerifiedAlumni()
 
@@ -616,7 +1008,10 @@ service cloud.firestore {
         && request.resource.data.keys().hasAll([
           'studentId',
           'alumniId',
-          'mentorshipRequestId'
+          'mentorshipRequestId',
+          'createdAt',
+          'lastMessage',
+          'lastMessageAt'
         ])
 
         && request.resource.data.studentId is string
@@ -644,15 +1039,18 @@ service cloud.firestore {
         && !blockedEitherWay(
           request.resource.data.studentId,
           request.resource.data.alumniId
-        );
+        )
+
+        && request.resource.data.lastMessage == ''
+
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.lastMessageAt == request.time;
 
       /*
-       * Participants can ONLY update chat preview metadata.
-       *
-       * studentId, alumniId and mentorshipRequestId are immutable.
+       * Participants may only update chat preview metadata.
+       * Participant IDs and mentorshipRequestId remain immutable.
        */
-      allow update: if signedIn()
-        && isActiveUser()
+      allow update: if isActiveUser()
 
         && (
           resource.data.studentId == request.auth.uid
@@ -672,9 +1070,12 @@ service cloud.firestore {
             'lastMessageAt'
           ])
 
-        && request.resource.data.lastMessage is string
+        && validRequiredString(
+          request.resource.data.lastMessage,
+          2000
+        )
 
-        && request.resource.data.lastMessage.size() <= 2000;
+        && request.resource.data.lastMessageAt == request.time;
 
       allow delete: if isAdmin();
 
@@ -686,24 +1087,15 @@ service cloud.firestore {
       match /messages/{messageId} {
 
         /*
-         * Blocking does NOT erase historical messages.
-         * Participants may still read their existing conversation.
+         * Blocking does not erase existing message history.
          */
-        allow read: if signedIn()
+        allow read: if emailVerified()
           && (
             isConversationParticipant(conversationId)
             || isAdmin()
           );
 
-        /*
-         * Database-level block enforcement.
-         *
-         * Even if somebody bypasses the UI and calls Firestore
-         * directly, message creation is refused when either user
-         * has blocked the other.
-         */
-        allow create: if signedIn()
-          && isActiveUser()
+        allow create: if isActiveUser()
 
           && isConversationParticipant(conversationId)
 
@@ -720,20 +1112,26 @@ service cloud.firestore {
 
           && request.resource.data.keys().hasAll([
             'senderId',
-            'text'
+            'text',
+            'createdAt'
           ])
 
           && request.resource.data.senderId == request.auth.uid
 
-          && request.resource.data.text is string
+          && validRequiredString(
+            request.resource.data.text,
+            2000
+          )
 
-          && request.resource.data.text.size() > 0
-          && request.resource.data.text.size() <= 2000;
+          && request.resource.data.createdAt == request.time;
 
         /*
-         * Sent messages are immutable for ordinary users.
+         * Ordinary users cannot rewrite message history.
+         * Admins may remove a message for moderation, but even
+         * admins cannot alter the text of a sent message.
          */
-        allow update, delete: if isAdmin();
+        allow update: if false;
+        allow delete: if isAdmin();
       }
     }
 
@@ -744,11 +1142,6 @@ service cloud.firestore {
 
     match /questions/{questionId} {
 
-      /*
-       * Students, verified alumni and admins may access Q&A.
-       *
-       * Pending alumni are deliberately excluded.
-       */
       allow read: if
         isStudent()
         || isVerifiedAlumni()
@@ -768,22 +1161,27 @@ service cloud.firestore {
           'studentId',
           'studentName',
           'questionText',
-          'status'
+          'status',
+          'createdAt'
         ])
 
         && request.resource.data.studentId == request.auth.uid
 
-        && request.resource.data.studentName is string
+        && request.resource.data.studentName
+          == userDoc(request.auth.uid).data.displayName
 
-        && request.resource.data.questionText is string
+        && validRequiredString(
+          request.resource.data.questionText,
+          3000
+        )
 
-        && request.resource.data.questionText.size() > 0
-        && request.resource.data.questionText.size() <= 3000
+        && request.resource.data.status == 'open'
 
-        && request.resource.data.status == 'open';
+        && request.resource.data.createdAt == request.time;
 
       /*
-       * ONLY a verified alumnus may answer.
+       * Only a verified alumnus may answer, and the displayed
+       * answerer name must match their account identity.
        */
       allow update: if isVerifiedAlumni()
 
@@ -793,12 +1191,15 @@ service cloud.firestore {
 
         && request.resource.data.answererId == request.auth.uid
 
-        && request.resource.data.answererName is string
+        && request.resource.data.answererName
+          == userDoc(request.auth.uid).data.displayName
 
-        && request.resource.data.answerText is string
+        && validRequiredString(
+          request.resource.data.answerText,
+          5000
+        )
 
-        && request.resource.data.answerText.size() > 0
-        && request.resource.data.answerText.size() <= 5000
+        && request.resource.data.answeredAt == request.time
 
         && request.resource.data
           .diff(resource.data)
@@ -821,7 +1222,12 @@ service cloud.firestore {
 
     match /reports/{reportId} {
 
-      allow create: if signedIn()
+      /*
+       * Reporting remains available to a verified-email account
+       * that participates in the conversation, even if that
+       * account later stops being active.
+       */
+      allow create: if hasCurrentUser()
 
         && request.resource.data.keys().hasOnly([
           'conversationId',
@@ -841,10 +1247,14 @@ service cloud.firestore {
           'reportedUserId',
           'reportedUserName',
           'reason',
-          'status'
+          'status',
+          'createdAt'
         ])
 
         && request.resource.data.reporterId == request.auth.uid
+
+        && request.resource.data.reporterName
+          == userDoc(request.auth.uid).data.displayName
 
         && request.resource.data.conversationId is string
 
@@ -875,23 +1285,32 @@ service cloud.firestore {
             ).data.alumniId
         )
 
-        && request.resource.data.reporterName is string
+        && request.resource.data.reportedUserName
+          == userDoc(
+            request.resource.data.reportedUserId
+          ).data.displayName
 
-        && request.resource.data.reportedUserName is string
+        && validRequiredString(
+          request.resource.data.reason,
+          2000
+        )
 
-        && request.resource.data.reason is string
+        && request.resource.data.status == 'open'
 
-        && request.resource.data.reason.size() > 0
-        && request.resource.data.reason.size() <= 2000
-
-        && request.resource.data.status == 'open';
+        && request.resource.data.createdAt == request.time;
 
       allow read: if isAdmin();
 
+      /*
+       * Reports can move one way: open -> resolved.
+       */
       allow update: if isAdmin()
 
-        && request.resource.data.status
-          in ['open', 'resolved']
+        && resource.data.status == 'open'
+
+        && request.resource.data.status == 'resolved'
+
+        && request.resource.data.resolvedAt == request.time
 
         && request.resource.data
           .diff(resource.data)
@@ -909,14 +1328,9 @@ service cloud.firestore {
     // BLOCKING
     // =========================================================
 
-    /*
-     * New structure:
-     *
-     * blocks/{blockerId}/blockedUsers/{blockedId}
-     */
     match /blocks/{blockerId}/blockedUsers/{blockedId} {
 
-      allow create: if signedIn()
+      allow create: if hasCurrentUser()
 
         && request.auth.uid == blockerId
 
@@ -932,37 +1346,29 @@ service cloud.firestore {
 
         && request.resource.data.keys().hasAll([
           'blockerId',
-          'blockedId'
+          'blockedId',
+          'createdAt'
         ])
 
         && request.resource.data.blockerId == blockerId
 
-        && request.resource.data.blockedId == blockedId;
+        && request.resource.data.blockedId == blockedId
 
-      /*
-       * Both sides may determine that the block exists.
-       * Admin may inspect it for safety/moderation.
-       */
-      allow read: if signedIn()
+        && request.resource.data.createdAt == request.time;
+
+      allow read: if hasCurrentUser()
         && (
           request.auth.uid == blockerId
           || request.auth.uid == blockedId
           || isAdmin()
         );
 
-      /*
-       * Only the blocker may unblock.
-       * Admin can also remove a block for moderation if required.
-       */
-      allow delete: if signedIn()
+      allow delete: if hasCurrentUser()
         && (
           request.auth.uid == blockerId
           || isAdmin()
         );
 
-      /*
-       * Block documents are immutable.
-       */
       allow update: if false;
     }
 

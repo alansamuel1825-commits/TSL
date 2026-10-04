@@ -71,6 +71,15 @@ export interface UserProfile {
   updatedAt?: unknown;
 }
 
+export interface PublicUserProfile {
+  uid: string;
+  displayName: string;
+  role: UserRole;
+  photoURL: string | null;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
 export async function getUserProfile(
   uid: string
 ): Promise<UserProfile | null> {
@@ -85,6 +94,66 @@ export async function getUserProfile(
   return snapshot.data() as UserProfile;
 }
 
+export async function getPublicUserProfile(
+  uid: string
+): Promise<PublicUserProfile | null> {
+  const reference = doc(
+    db,
+    "publicProfiles",
+    uid
+  );
+
+  const snapshot = await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    return null;
+  }
+
+  return snapshot.data() as PublicUserProfile;
+}
+
+export async function ensureOwnPublicProfile(
+  profile: UserProfile
+): Promise<void> {
+  const reference = doc(
+    db,
+    "publicProfiles",
+    profile.uid
+  );
+
+  const snapshot = await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    await setDoc(reference, {
+      uid: profile.uid,
+      displayName: profile.displayName,
+      role: profile.role,
+      photoURL: profile.photoURL,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    return;
+  }
+
+  const current =
+    snapshot.data() as PublicUserProfile;
+
+  if (
+    current.displayName === profile.displayName &&
+    current.role === profile.role &&
+    current.photoURL === profile.photoURL
+  ) {
+    return;
+  }
+
+  await updateDoc(reference, {
+    displayName: profile.displayName,
+    photoURL: profile.photoURL,
+    updatedAt: serverTimestamp(),
+  });
+}
+
 export async function createUserProfile(
   uid: string,
   data: {
@@ -93,13 +162,23 @@ export async function createUserProfile(
     role: UserRole;
     photoURL?: string | null;
   }
-) {
-  const reference = doc(db, "users", uid);
+): Promise<UserProfile> {
+  const userRef = doc(
+    db,
+    "users",
+    uid
+  );
+
+  const publicRef = doc(
+    db,
+    "publicProfiles",
+    uid
+  );
 
   const profile: UserProfile = {
     uid,
-    email: data.email,
-    displayName: data.displayName,
+    email: data.email.trim(),
+    displayName: data.displayName.trim(),
     role: data.role,
     status:
       data.role === "alumni"
@@ -111,15 +190,163 @@ export async function createUserProfile(
     updatedAt: serverTimestamp(),
   };
 
-  await setDoc(reference, profile);
+  const batch = writeBatch(db);
+
+  batch.set(userRef, profile);
+
+  batch.set(publicRef, {
+    uid,
+    displayName: profile.displayName,
+    role: profile.role,
+    photoURL: profile.photoURL,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  await batch.commit();
 
   return profile;
+}
+
+export async function completeStudentOnboarding(
+  uid: string,
+  account: {
+    email: string;
+    displayName: string;
+    photoURL?: string | null;
+  },
+  data: {
+    graduationYear: string;
+    interests: string[];
+    bio: string;
+  }
+): Promise<void> {
+  const name = account.displayName.trim();
+
+  const userRef = doc(db, "users", uid);
+  const publicRef = doc(db, "publicProfiles", uid);
+  const studentRef = doc(db, "studentProfiles", uid);
+
+  const batch = writeBatch(db);
+
+  batch.set(userRef, {
+    uid,
+    email: account.email.trim(),
+    displayName: name,
+    role: "student",
+    status: "active",
+    photoURL: account.photoURL ?? null,
+    isAdmin: false,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.set(publicRef, {
+    uid,
+    displayName: name,
+    role: "student",
+    photoURL: account.photoURL ?? null,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.set(studentRef, {
+    uid,
+    name,
+    graduationYear: data.graduationYear.trim(),
+    interests: data.interests,
+    bio: data.bio.trim(),
+    profileCompleted: true,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  await batch.commit();
+}
+
+export async function completeAlumniOnboarding(
+  uid: string,
+  account: {
+    email: string;
+    displayName: string;
+    photoURL?: string | null;
+  },
+  data: {
+    graduationYear: string;
+    university: string;
+    degree: string;
+    field: string;
+    currentRole: string;
+    company: string;
+    expertise: string[];
+    bio: string;
+    mentorshipAvailable: boolean;
+  }
+): Promise<void> {
+  const name = account.displayName.trim();
+
+  const userRef = doc(db, "users", uid);
+  const publicRef = doc(db, "publicProfiles", uid);
+  const alumniRef = doc(db, "alumniProfiles", uid);
+
+  const batch = writeBatch(db);
+
+  batch.set(userRef, {
+    uid,
+    email: account.email.trim(),
+    displayName: name,
+    role: "alumni",
+    status: "pending",
+    photoURL: account.photoURL ?? null,
+    isAdmin: false,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.set(publicRef, {
+    uid,
+    displayName: name,
+    role: "alumni",
+    photoURL: account.photoURL ?? null,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.set(alumniRef, {
+    uid,
+    name,
+    graduationYear: data.graduationYear.trim(),
+    university: data.university.trim(),
+    degree: data.degree.trim(),
+    field: data.field.trim(),
+    currentRole: data.currentRole.trim(),
+    company: data.company.trim(),
+    expertise: data.expertise,
+    bio: data.bio.trim(),
+    mentorshipAvailable: data.mentorshipAvailable,
+    verificationStatus: "pending",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  await batch.commit();
 }
 
 
 // ============================================================
 // STUDENT PROFILES
 // ============================================================
+
+export type StudentProfile = {
+  uid: string;
+  name: string;
+  graduationYear: string;
+  interests: string[];
+  bio: string;
+  profileCompleted: boolean;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
 
 export async function createStudentProfile(
   uid: string,
@@ -129,7 +356,7 @@ export async function createStudentProfile(
     interests: string[];
     bio: string;
   }
-) {
+): Promise<void> {
   const reference = doc(
     db,
     "studentProfiles",
@@ -148,10 +375,161 @@ export async function createStudentProfile(
   });
 }
 
+export async function getStudentProfile(
+  uid: string
+): Promise<StudentProfile | null> {
+  const reference = doc(
+    db,
+    "studentProfiles",
+    uid
+  );
+
+  const snapshot = await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    return null;
+  }
+
+  return snapshot.data() as StudentProfile;
+}
+
+export async function updateStudentProfile(
+  uid: string,
+  data: {
+    name: string;
+    graduationYear: string;
+    interests: string[];
+    bio: string;
+  }
+): Promise<void> {
+  const name = data.name.trim();
+  const graduationYear =
+    data.graduationYear.trim();
+  const bio = data.bio.trim();
+
+  const interests = Array.from(
+    new Set(
+      data.interests
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!name) {
+    throw new Error(
+      "Please enter your name."
+    );
+  }
+
+  if (name.length > 100) {
+    throw new Error(
+      "Name is too long."
+    );
+  }
+
+  if (!graduationYear) {
+    throw new Error(
+      "Please enter your graduation year."
+    );
+  }
+
+  if (graduationYear.length > 20) {
+    throw new Error(
+      "Graduation year is too long."
+    );
+  }
+
+  if (bio.length > 2000) {
+    throw new Error(
+      "Bio is too long."
+    );
+  }
+
+  if (interests.length > 20) {
+    throw new Error(
+      "Please keep interests to 20 or fewer."
+    );
+  }
+
+  if (
+    interests.some(
+      (item) => item.length > 80
+    )
+  ) {
+    throw new Error(
+      "One or more interests are too long."
+    );
+  }
+
+  const userRef = doc(
+    db,
+    "users",
+    uid
+  );
+
+  const studentRef = doc(
+    db,
+    "studentProfiles",
+    uid
+  );
+
+  const publicRef = doc(
+    db,
+    "publicProfiles",
+    uid
+  );
+
+  const batch = writeBatch(db);
+
+  batch.update(userRef, {
+    displayName: name,
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.update(publicRef, {
+    displayName: name,
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.update(studentRef, {
+    name,
+    graduationYear,
+    interests,
+    bio,
+    updatedAt: serverTimestamp(),
+  });
+
+  await batch.commit();
+}
+
 
 // ============================================================
 // ALUMNI PROFILES
 // ============================================================
+
+export type AlumniVerificationStatus =
+  | "pending"
+  | "verified"
+  | "rejected";
+
+export type AlumniProfile = {
+  id: string;
+  uid: string;
+  name: string;
+  graduationYear: string;
+  university: string;
+  degree: string;
+  field: string;
+  currentRole: string;
+  company: string;
+  expertise: string[];
+  bio: string;
+  mentorshipAvailable: boolean;
+  verificationStatus:
+    AlumniVerificationStatus;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+};
 
 export async function createAlumniProfile(
   uid: string,
@@ -193,7 +571,8 @@ export async function createAlumniProfile(
   });
 }
 
-export async function getPendingAlumni() {
+export async function getPendingAlumni():
+  Promise<AlumniProfile[]> {
   const alumniRef = collection(
     db,
     "alumniProfiles"
@@ -213,7 +592,7 @@ export async function getPendingAlumni() {
   return snapshot.docs.map((item) => ({
     id: item.id,
     ...item.data(),
-  }));
+  })) as AlumniProfile[];
 }
 
 export async function updateAlumniVerification(
@@ -256,7 +635,8 @@ export async function updateAlumniVerification(
   await batch.commit();
 }
 
-export async function getVerifiedAlumni() {
+export async function getVerifiedAlumni():
+  Promise<AlumniProfile[]> {
   const alumniRef = collection(
     db,
     "alumniProfiles"
@@ -276,12 +656,12 @@ export async function getVerifiedAlumni() {
   return snapshot.docs.map((item) => ({
     id: item.id,
     ...item.data(),
-  }));
+  })) as AlumniProfile[];
 }
 
 export async function getAlumniProfile(
   uid: string
-) {
+): Promise<AlumniProfile | null> {
   const reference = doc(
     db,
     "alumniProfiles",
@@ -297,7 +677,149 @@ export async function getAlumniProfile(
   return {
     id: snapshot.id,
     ...snapshot.data(),
-  };
+  } as AlumniProfile;
+}
+
+export async function updateAlumniProfile(
+  uid: string,
+  data: {
+    name: string;
+    graduationYear: string;
+    university: string;
+    degree: string;
+    field: string;
+    currentRole: string;
+    company: string;
+    expertise: string[];
+    bio: string;
+    mentorshipAvailable: boolean;
+  }
+): Promise<void> {
+  const name = data.name.trim();
+  const graduationYear =
+    data.graduationYear.trim();
+  const university =
+    data.university.trim();
+  const degree = data.degree.trim();
+  const field = data.field.trim();
+  const currentRole =
+    data.currentRole.trim();
+  const company = data.company.trim();
+  const bio = data.bio.trim();
+
+  const expertise = Array.from(
+    new Set(
+      data.expertise
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (!name) {
+    throw new Error(
+      "Please enter your name."
+    );
+  }
+
+  if (name.length > 100) {
+    throw new Error(
+      "Name is too long."
+    );
+  }
+
+  if (!graduationYear) {
+    throw new Error(
+      "Please enter your graduation year."
+    );
+  }
+
+  const shortFields = [
+    graduationYear,
+    university,
+    degree,
+    field,
+    currentRole,
+    company,
+  ];
+
+  if (
+    shortFields.some(
+      (value) => value.length > 150
+    )
+  ) {
+    throw new Error(
+      "One or more profile fields are too long."
+    );
+  }
+
+  if (bio.length > 3000) {
+    throw new Error(
+      "Bio is too long."
+    );
+  }
+
+  if (expertise.length > 20) {
+    throw new Error(
+      "Please keep expertise to 20 or fewer items."
+    );
+  }
+
+  if (
+    expertise.some(
+      (item) => item.length > 80
+    )
+  ) {
+    throw new Error(
+      "One or more expertise items are too long."
+    );
+  }
+
+  const userRef = doc(
+    db,
+    "users",
+    uid
+  );
+
+  const alumniRef = doc(
+    db,
+    "alumniProfiles",
+    uid
+  );
+
+  const publicRef = doc(
+    db,
+    "publicProfiles",
+    uid
+  );
+
+  const batch = writeBatch(db);
+
+  batch.update(userRef, {
+    displayName: name,
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.update(publicRef, {
+    displayName: name,
+    updatedAt: serverTimestamp(),
+  });
+
+  batch.update(alumniRef, {
+    name,
+    graduationYear,
+    university,
+    degree,
+    field,
+    currentRole,
+    company,
+    expertise,
+    bio,
+    mentorshipAvailable:
+      data.mentorshipAvailable,
+    updatedAt: serverTimestamp(),
+  });
+
+  await batch.commit();
 }
 
 
@@ -575,15 +1097,15 @@ export async function acceptMentorshipRequest(
     db,
     async (transaction) => {
       /*
-       * ALL transaction reads happen before writes.
+       * Read ONLY the mentorship request here.
+       *
+       * A pending request does not have a conversation yet,
+       * so attempting to read conversations/{requestId}
+       * before creation can fail against the hardened
+       * Firestore read rule.
        */
       const requestSnapshot =
         await transaction.get(requestRef);
-
-      const conversationSnapshot =
-        await transaction.get(
-          conversationRef
-        );
 
       if (!requestSnapshot.exists()) {
         throw new Error(
@@ -610,51 +1132,16 @@ export async function acceptMentorshipRequest(
       }
 
       /*
-       * Make retries safe.
+       * Idempotent retry:
+       *
+       * A successful acceptance writes the request and
+       * conversation atomically. Therefore, if the request
+       * is already accepted, the original transaction has
+       * already completed successfully.
        */
       if (
         requestData.status === "accepted"
       ) {
-        if (
-          conversationSnapshot.exists()
-        ) {
-          const conversationData =
-            conversationSnapshot.data();
-
-          if (
-            conversationData.studentId !==
-              studentId ||
-            conversationData.alumniId !==
-              alumniId
-          ) {
-            throw new Error(
-              "Existing conversation does not match this mentorship request."
-            );
-          }
-
-          return;
-        }
-
-        /*
-         * Repair path:
-         * accepted request exists but its deterministic
-         * conversation does not.
-         */
-        transaction.set(
-          conversationRef,
-          {
-            studentId,
-            alumniId,
-            mentorshipRequestId:
-              requestId,
-            createdAt:
-              serverTimestamp(),
-            lastMessage: "",
-            lastMessageAt:
-              serverTimestamp(),
-          }
-        );
-
         return;
       }
 
@@ -666,14 +1153,6 @@ export async function acceptMentorshipRequest(
         );
       }
 
-      if (
-        conversationSnapshot.exists()
-      ) {
-        throw new Error(
-          "A conversation already exists for this mentorship request."
-        );
-      }
-
       /*
        * Atomic operation:
        *
@@ -681,7 +1160,9 @@ export async function acceptMentorshipRequest(
        *
        * AND
        *
-       * conversation creation
+       * deterministic conversation creation
+       *
+       * Either both writes succeed or neither does.
        */
       transaction.update(
         requestRef,

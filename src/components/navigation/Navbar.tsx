@@ -1,12 +1,16 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useState } from "react";
 
 import { useAuth } from "@/lib/auth/useAuth";
 import { logOut } from "@/lib/firebase/auth";
 
-const loggedOutLinks = [{ name: "Explore Alumni", href: "/alumni" }];
+const loggedOutLinks = [
+  { name: "Explore Alumni", href: "/alumni" },
+];
 
 const loggedInLinks = [
   { name: "Dashboard", href: "/dashboard" },
@@ -14,82 +18,209 @@ const loggedInLinks = [
   { name: "Mentorship", href: "/mentorship" },
   { name: "Messages", href: "/messages" },
   { name: "Ask", href: "/ask" },
+  { name: "Settings", href: "/settings" },
 ];
 
 export default function Navbar() {
+  const pathname = usePathname();
   const router = useRouter();
   const { user, loading } = useAuth();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
-  async function handleSignOut() {
-    await logOut();
-    router.push("/login");
+  // The homepage has its own landing-page navigation.
+  if (pathname === "/") {
+    return null;
   }
 
   const links = user ? loggedInLinks : loggedOutLinks;
 
+  async function handleSignOut() {
+    setMobileOpen(false);
+    await logOut();
+    router.push("/login");
+  }
+
+  function isActive(href: string) {
+    return pathname === href || pathname.startsWith(`${href}/`);
+  }
+
   return (
-    <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-        <Link href="/" className="group">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-900 text-sm font-bold text-white">
-              T
-            </div>
+    <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/92 backdrop-blur-xl">
+      <div className="mx-auto flex min-h-[76px] max-w-7xl items-center justify-between gap-5 px-5 sm:px-6 lg:px-8">
+        <Link
+          href="/"
+          className="group flex min-w-0 items-center gap-3"
+          aria-label="The Study L'école Internationale Alumni Connect home"
+        >
+          <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-full bg-white ring-1 ring-slate-200 transition group-hover:ring-blue-200">
+            <Image
+              src="/the-study-logo.png"
+              alt="The Study L'école Internationale logo"
+              fill
+              sizes="48px"
+              className="object-contain p-1"
+            />
+          </div>
 
-            <div className="leading-none">
-              <div className="font-semibold tracking-tight">TSL</div>
-
-              <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-slate-500">
-                Alumni Connect
-              </div>
-            </div>
+          <div className="min-w-0 leading-tight">
+            <p className="truncate text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-700 sm:text-xs">
+              The Study L&apos;école Internationale
+            </p>
+            <p className="mt-1 truncate text-sm font-semibold tracking-tight text-slate-950 sm:text-[15px]">
+              Alumni Connect
+            </p>
           </div>
         </Link>
 
-        <nav className="hidden items-center gap-7 md:flex">
-          {links.map((link) => (
-            <Link
-              key={link.href}
-              href={link.href}
-              className="text-sm text-slate-600 transition hover:text-slate-950"
-            >
-              {link.name}
-            </Link>
-          ))}
+        <nav className="hidden items-center gap-1 lg:flex" aria-label="Main navigation">
+          {links.map((link) => {
+            const active = isActive(link.href);
 
-          {loading ? null : user ? (
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={[
+                  "rounded-full px-4 py-2.5 text-sm font-medium transition",
+                  active
+                    ? "bg-blue-50 text-blue-700"
+                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-950",
+                ].join(" ")}
+              >
+                {link.name}
+              </Link>
+            );
+          })}
+
+          <div className="ml-2 h-6 w-px bg-slate-200" />
+
+          {loading ? (
+            <div
+              className="ml-2 h-10 w-24 animate-pulse rounded-full bg-slate-100"
+              aria-label="Loading account"
+            />
+          ) : user ? (
             <button
+              type="button"
               onClick={handleSignOut}
-              className="rounded-full border border-slate-300 px-5 py-2.5 text-sm font-medium text-slate-900 transition hover:bg-slate-50"
+              className="ml-2 rounded-full border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-800 transition hover:border-slate-400 hover:bg-slate-50"
             >
               Sign out
             </button>
           ) : (
-            <Link
-              href="/login"
-              className="rounded-full bg-slate-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-slate-800"
-            >
-              Sign in
-            </Link>
+            <div className="ml-2 flex items-center gap-2">
+              <Link
+                href="/login"
+                className="rounded-full px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-slate-950"
+              >
+                Sign in
+              </Link>
+
+              <Link
+                href="/signup"
+                className="rounded-full bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-800"
+              >
+                Join
+              </Link>
+            </div>
           )}
         </nav>
 
-        {loading ? null : user ? (
-          <button
-            onClick={handleSignOut}
-            className="rounded-full border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 md:hidden"
-          >
-            Sign out
-          </button>
-        ) : (
-          <Link
-            href="/login"
-            className="rounded-full bg-slate-900 px-4 py-2 text-sm font-medium text-white md:hidden"
-          >
-            Sign in
-          </Link>
-        )}
+        <button
+          type="button"
+          onClick={() => setMobileOpen((open) => !open)}
+          className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-800 transition hover:bg-slate-50 lg:hidden"
+          aria-label={mobileOpen ? "Close navigation menu" : "Open navigation menu"}
+          aria-expanded={mobileOpen}
+        >
+          {mobileOpen ? (
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              className="h-5 w-5"
+              aria-hidden="true"
+            >
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          ) : (
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              className="h-5 w-5"
+              aria-hidden="true"
+            >
+              <path d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
+          )}
+        </button>
       </div>
+
+      {mobileOpen && (
+        <div className="border-t border-slate-200 bg-white lg:hidden">
+          <nav
+            className="mx-auto max-w-7xl px-5 py-4 sm:px-6"
+            aria-label="Mobile navigation"
+          >
+            <div className="grid gap-1">
+              {links.map((link) => {
+                const active = isActive(link.href);
+
+                return (
+                  <Link
+                    key={link.href}
+                    href={link.href}
+                    onClick={() => setMobileOpen(false)}
+                    className={[
+                      "rounded-2xl px-4 py-3 text-sm font-medium transition",
+                      active
+                        ? "bg-blue-50 text-blue-700"
+                        : "text-slate-700 hover:bg-slate-50",
+                    ].join(" ")}
+                  >
+                    {link.name}
+                  </Link>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 border-t border-slate-200 pt-4">
+              {loading ? (
+                <div className="h-11 w-full animate-pulse rounded-2xl bg-slate-100" />
+              ) : user ? (
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                >
+                  Sign out
+                </button>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <Link
+                    href="/login"
+                    onClick={() => setMobileOpen(false)}
+                    className="rounded-2xl border border-slate-300 px-4 py-3 text-center text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                  >
+                    Sign in
+                  </Link>
+
+                  <Link
+                    href="/signup"
+                    onClick={() => setMobileOpen(false)}
+                    className="rounded-2xl bg-blue-700 px-4 py-3 text-center text-sm font-semibold text-white transition hover:bg-blue-800"
+                  >
+                    Join
+                  </Link>
+                </div>
+              )}
+            </div>
+          </nav>
+        </div>
+      )}
     </header>
   );
 }
