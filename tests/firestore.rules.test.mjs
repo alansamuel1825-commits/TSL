@@ -2881,3 +2881,2060 @@ test(
     );
   },
 );
+
+// ============================================================
+// PRIVATE USER PREFERENCES
+// ============================================================
+
+test(
+  "Verified user can create their own preferences",
+  async () => {
+    await seedStudent();
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      setDoc(
+        doc(
+          db,
+          "userPreferences",
+          "student1",
+        ),
+        {
+          uid: "student1",
+          theme: "system",
+          textSize: "default",
+          highContrast: false,
+          reduceMotion: false,
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Unverified user cannot create preferences",
+  async () => {
+    await seedStudent();
+
+    const db =
+      unverifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "userPreferences",
+          "student1",
+        ),
+        {
+          uid: "student1",
+          theme: "system",
+          textSize: "default",
+          highContrast: false,
+          reduceMotion: false,
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "User cannot read another member's private preferences",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "userPreferences",
+            "student2",
+          ),
+          {
+            uid: "student2",
+            theme: "dark",
+            textSize: "large",
+            highContrast: true,
+            reduceMotion: true,
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "userPreferences",
+          "student2",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "User cannot write preferences into another user's document",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "userPreferences",
+          "student2",
+        ),
+        {
+          uid: "student2",
+          theme: "dark",
+          textSize: "large",
+          highContrast: true,
+          reduceMotion: true,
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "User cannot save an unsupported theme value",
+  async () => {
+    await seedStudent();
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "userPreferences",
+          "student1",
+        ),
+        {
+          uid: "student1",
+          theme: "neon",
+          textSize: "default",
+          highContrast: false,
+          reduceMotion: false,
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
+test(
+  "Student can atomically create a legitimate mentorship-request notification",
+  async () => {
+    await seedStudent("student1");
+    await seedVerifiedAlumni("alumni1");
+
+    const db =
+      verifiedDb("student1");
+
+    const batch =
+      writeBatch(db);
+
+    batch.set(
+      doc(
+        db,
+        "mentorshipRequests",
+        "request1",
+      ),
+      {
+        studentId: "student1",
+        alumniId: "alumni1",
+        message:
+          "Could you mentor me?",
+        status: "pending",
+        createdAt:
+          serverTimestamp(),
+        updatedAt:
+          serverTimestamp(),
+      },
+    );
+
+    batch.set(
+      doc(
+        db,
+        "notifications",
+        "alumni1",
+        "items",
+        "mentorship-requested-request1",
+      ),
+      {
+        recipientId: "alumni1",
+        actorId: "student1",
+        type:
+          "mentorship_requested",
+        entityId: "request1",
+        eventId: "request1",
+        createdAt:
+          serverTimestamp(),
+        readAt: null,
+      },
+    );
+
+    await assertSucceeds(
+      batch.commit(),
+    );
+  },
+);
+
+test(
+  "Student cannot spoof a mentorship notification to another member",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+    await seedVerifiedAlumni("alumni1");
+
+    const db =
+      verifiedDb("student1");
+
+    const batch =
+      writeBatch(db);
+
+    batch.set(
+      doc(
+        db,
+        "mentorshipRequests",
+        "request1",
+      ),
+      {
+        studentId: "student1",
+        alumniId: "alumni1",
+        message:
+          "Could you mentor me?",
+        status: "pending",
+        createdAt:
+          serverTimestamp(),
+        updatedAt:
+          serverTimestamp(),
+      },
+    );
+
+    batch.set(
+      doc(
+        db,
+        "notifications",
+        "student2",
+        "items",
+        "mentorship-requested-request1",
+      ),
+      {
+        recipientId: "student2",
+        actorId: "student1",
+        type:
+          "mentorship_requested",
+        entityId: "request1",
+        eventId: "request1",
+        createdAt:
+          serverTimestamp(),
+        readAt: null,
+      },
+    );
+
+    await assertFails(
+      batch.commit(),
+    );
+  },
+);
+
+test(
+  "Notification recipient can read their own notification",
+  async () => {
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "notifications",
+            "student1",
+            "items",
+            "notice1",
+          ),
+          {
+            recipientId:
+              "student1",
+            actorId:
+              "alumni1",
+            type:
+              "question_answered",
+            entityId:
+              "question1",
+            eventId:
+              "question1",
+            readAt: null,
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      getDoc(
+        doc(
+          db,
+          "notifications",
+          "student1",
+          "items",
+          "notice1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Another member cannot read someone else's notification",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "notifications",
+            "student1",
+            "items",
+            "notice1",
+          ),
+          {
+            recipientId:
+              "student1",
+            actorId:
+              "student2",
+            type:
+              "new_message",
+            entityId:
+              "conversation1",
+            eventId:
+              "message1",
+            readAt: null,
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student2");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "notifications",
+          "student1",
+          "items",
+          "notice1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Recipient can mark their notification read",
+  async () => {
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "notifications",
+            "student1",
+            "items",
+            "notice1",
+          ),
+          {
+            recipientId:
+              "student1",
+            actorId:
+              "alumni1",
+            type:
+              "question_answered",
+            entityId:
+              "question1",
+            eventId:
+              "question1",
+            readAt: null,
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      updateDoc(
+        doc(
+          db,
+          "notifications",
+          "student1",
+          "items",
+          "notice1",
+        ),
+        {
+          readAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Another member cannot mark the recipient's notification read",
+  async () => {
+    await seedStudent("student1");
+    await seedVerifiedAlumni("alumni1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "notifications",
+            "student1",
+            "items",
+            "notice1",
+          ),
+          {
+            recipientId:
+              "student1",
+            actorId:
+              "alumni1",
+            type:
+              "question_answered",
+            entityId:
+              "question1",
+            eventId:
+              "question1",
+            readAt: null,
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("alumni1");
+
+    await assertFails(
+      updateDoc(
+        doc(
+          db,
+          "notifications",
+          "student1",
+          "items",
+          "notice1",
+        ),
+        {
+          readAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Member cannot forge a system verification notification",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "notifications",
+          "student2",
+          "items",
+          "alumni_verified-student2",
+        ),
+        {
+          recipientId:
+            "student2",
+          actorId:
+            "student1",
+          type:
+            "alumni_verified",
+          entityId:
+            "student2",
+          eventId:
+            "student2",
+          createdAt:
+            serverTimestamp(),
+          readAt: null,
+        },
+      ),
+    );
+  },
+);
+
+// ============================================================
+// PROJECTS / PORTFOLIO
+// ============================================================
+
+function validProjectPayload(
+  ownerId,
+  {
+    status = "draft",
+    projectUrl = "",
+  } = {},
+) {
+  return {
+    ownerId,
+    title: "Autonomous Garden Monitor",
+    category: "Engineering",
+    summary:
+      status === "published"
+        ? "A sensor-based system that monitors plant conditions."
+        : "",
+    description:
+      status === "published"
+        ? "This project combines sensors, embedded software and a simple dashboard."
+        : "",
+    role: "Builder",
+    outcome: "",
+    technologies: [
+      "TypeScript",
+      "Embedded systems",
+    ],
+    projectUrl,
+    repositoryUrl: "",
+    collaborationWanted: true,
+    mentorshipWanted: false,
+    status,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+}
+
+test(
+  "Active student can create a private project draft",
+  async () => {
+    await seedStudent("student1");
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      setDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+        validProjectPayload(
+          "student1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Pending alumni cannot create a project",
+  async () => {
+    await seedPendingAlumni(
+      "alumni1",
+    );
+
+    const db =
+      verifiedDb("alumni1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+        validProjectPayload(
+          "alumni1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Owner can read their own project draft",
+  async () => {
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "projects",
+            "project1",
+          ),
+          {
+            ...validProjectPayload(
+              "student1",
+            ),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      getDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Another member cannot read someone else's draft",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "projects",
+            "project1",
+          ),
+          {
+            ...validProjectPayload(
+              "student1",
+            ),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student2");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Active member can read a published community project",
+  async () => {
+    await seedStudent("student1");
+    await seedVerifiedAlumni(
+      "alumni1",
+    );
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "projects",
+            "project1",
+          ),
+          {
+            ...validProjectPayload(
+              "student1",
+              {
+                status:
+                  "published",
+              },
+            ),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("alumni1");
+
+    await assertSucceeds(
+      getDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Unverified email account cannot read a published project",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "projects",
+            "project1",
+          ),
+          {
+            ...validProjectPayload(
+              "student1",
+              {
+                status:
+                  "published",
+              },
+            ),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      unverifiedDb("student2");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Project owner can publish a valid draft",
+  async () => {
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "projects",
+            "project1",
+          ),
+          {
+            ownerId:
+              "student1",
+            title:
+              "Autonomous Garden Monitor",
+            category:
+              "Engineering",
+            summary: "",
+            description: "",
+            role: "Builder",
+            outcome: "",
+            technologies: [],
+            projectUrl: "",
+            repositoryUrl: "",
+            collaborationWanted:
+              false,
+            mentorshipWanted:
+              false,
+            status: "draft",
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      updateDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+        {
+          summary:
+            "A sensor-based system that monitors plant conditions.",
+          description:
+            "This project combines sensors, embedded software and a simple dashboard.",
+          status:
+            "published",
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Project owner cannot change project ownership",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "projects",
+            "project1",
+          ),
+          {
+            ...validProjectPayload(
+              "student1",
+            ),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      updateDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+        {
+          ownerId:
+            "student2",
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Another member cannot edit someone else's project",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "projects",
+            "project1",
+          ),
+          {
+            ...validProjectPayload(
+              "student1",
+              {
+                status:
+                  "published",
+              },
+            ),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student2");
+
+    await assertFails(
+      updateDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+        {
+          title:
+            "Hijacked title",
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Published project cannot use a non-HTTPS project link",
+  async () => {
+    await seedStudent("student1");
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+        validProjectPayload(
+          "student1",
+          {
+            status:
+              "published",
+            projectUrl:
+              "http://example.com",
+          },
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Owner can delete their project",
+  async () => {
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "projects",
+            "project1",
+          ),
+          {
+            ...validProjectPayload(
+              "student1",
+            ),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      deleteDoc(
+        doc(
+          db,
+          "projects",
+          "project1",
+        ),
+      ),
+    );
+  },
+);
+
+// ============================================================
+// COMMUNITY HUB
+// ============================================================
+
+function validResourcePayload(
+  adminId,
+  {
+    status = "published",
+  } = {},
+) {
+  return {
+    kind: "resource",
+    title:
+      "University application guide",
+    summary:
+      "A school-curated guide for planning university applications.",
+    details:
+      "Use this guide as a starting point and confirm deadlines with each institution.",
+    category:
+      "University planning",
+    organization:
+      "The Study",
+    location: "",
+    eventMode: "",
+    startAt: null,
+    endAt: null,
+    deadline: null,
+    eligibility: "",
+    url:
+      "https://example.com/resource",
+    status,
+    createdBy:
+      adminId,
+    createdAt:
+      serverTimestamp(),
+    updatedAt:
+      serverTimestamp(),
+  };
+}
+
+test(
+  "Admin can publish a community resource",
+  async () => {
+    await seedAdmin("admin1");
+
+    const db =
+      verifiedDb("admin1");
+
+    await assertSucceeds(
+      setDoc(
+        doc(
+          db,
+          "communityContent",
+          "resource1",
+        ),
+        validResourcePayload(
+          "admin1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Ordinary student cannot publish community content",
+  async () => {
+    await seedStudent("student1");
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "communityContent",
+          "resource1",
+        ),
+        validResourcePayload(
+          "student1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Active member can read published community content",
+  async () => {
+    await seedAdmin("admin1");
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "communityContent",
+            "resource1",
+          ),
+          {
+            ...validResourcePayload(
+              "admin1",
+            ),
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      getDoc(
+        doc(
+          db,
+          "communityContent",
+          "resource1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Ordinary member cannot read admin draft content",
+  async () => {
+    await seedAdmin("admin1");
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "communityContent",
+            "resource1",
+          ),
+          {
+            ...validResourcePayload(
+              "admin1",
+              {
+                status:
+                  "draft",
+              },
+            ),
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "communityContent",
+          "resource1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Unverified email account cannot read published hub content",
+  async () => {
+    await seedAdmin("admin1");
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "communityContent",
+            "resource1",
+          ),
+          {
+            ...validResourcePayload(
+              "admin1",
+            ),
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      unverifiedDb("student1");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "communityContent",
+          "resource1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Active user can save a published hub item",
+  async () => {
+    await seedAdmin("admin1");
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "communityContent",
+            "resource1",
+          ),
+          {
+            ...validResourcePayload(
+              "admin1",
+            ),
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      setDoc(
+        doc(
+          db,
+          "savedContent",
+          "student1",
+          "items",
+          "resource1",
+        ),
+        {
+          uid:
+            "student1",
+          contentId:
+            "resource1",
+          createdAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "User cannot save unpublished hub content",
+  async () => {
+    await seedAdmin("admin1");
+    await seedStudent("student1");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "communityContent",
+            "resource1",
+          ),
+          {
+            ...validResourcePayload(
+              "admin1",
+              {
+                status:
+                  "draft",
+              },
+            ),
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "savedContent",
+          "student1",
+          "items",
+          "resource1",
+        ),
+        {
+          uid:
+            "student1",
+          contentId:
+            "resource1",
+          createdAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "User cannot read another member's saved hub items",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "savedContent",
+            "student1",
+            "items",
+            "resource1",
+          ),
+          {
+            uid:
+              "student1",
+            contentId:
+              "resource1",
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student2");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "savedContent",
+          "student1",
+          "items",
+          "resource1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Admin cannot create an event whose end is before its start",
+  async () => {
+    await seedAdmin("admin1");
+
+    const db =
+      verifiedDb("admin1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "communityContent",
+          "event1",
+        ),
+        {
+          kind:
+            "event",
+          title:
+            "Alumni careers panel",
+          summary:
+            "A panel with verified alumni.",
+          details: "",
+          category:
+            "Career",
+          organization:
+            "The Study",
+          location:
+            "School auditorium",
+          eventMode:
+            "in_person",
+          startAt:
+            new Date(
+              "2030-05-01T15:00:00Z",
+            ),
+          endAt:
+            new Date(
+              "2030-05-01T14:00:00Z",
+            ),
+          deadline: null,
+          eligibility: "",
+          url: "",
+          status:
+            "published",
+          createdBy:
+            "admin1",
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+// ============================================================
+// NOTIFICATION PREFERENCES + HUB REMINDERS
+// ============================================================
+
+test(
+  "User can create their own notification preferences",
+  async () => {
+    await seedStudent("student1");
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      setDoc(
+        doc(
+          db,
+          "notificationPreferences",
+          "student1",
+        ),
+        {
+          uid:
+            "student1",
+          mentorshipAlerts:
+            true,
+          messageAlerts:
+            true,
+          qnaAlerts:
+            true,
+          hubReminders:
+            true,
+          reminderLeadHours:
+            24,
+          timezone:
+            "Asia/Kolkata",
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Another user cannot read notification preferences",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "notificationPreferences",
+            "student1",
+          ),
+          {
+            uid:
+              "student1",
+            mentorshipAlerts:
+              true,
+            messageAlerts:
+              true,
+            qnaAlerts:
+              true,
+            hubReminders:
+              true,
+            reminderLeadHours:
+              24,
+            timezone:
+              "Asia/Kolkata",
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student2");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "notificationPreferences",
+          "student1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Unsupported reminder lead time is rejected",
+  async () => {
+    await seedStudent("student1");
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "notificationPreferences",
+          "student1",
+        ),
+        {
+          uid:
+            "student1",
+          mentorshipAlerts:
+            true,
+          messageAlerts:
+            true,
+          qnaAlerts:
+            true,
+          hubReminders:
+            true,
+          reminderLeadHours:
+            7,
+          timezone:
+            "Asia/Kolkata",
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Active student can create a reminder for a published event",
+  async () => {
+    await seedAdmin("admin1");
+    await seedStudent("student1");
+
+    const target =
+      new Date(
+        "2030-05-01T15:00:00Z",
+      );
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "communityContent",
+            "event1",
+          ),
+          {
+            kind:
+              "event",
+            title:
+              "Alumni careers panel",
+            summary:
+              "A panel with verified alumni.",
+            details: "",
+            category:
+              "Career",
+            organization:
+              "The Study",
+            location:
+              "School auditorium",
+            eventMode:
+              "in_person",
+            startAt:
+              target,
+            endAt: null,
+            deadline: null,
+            eligibility: "",
+            url: "",
+            status:
+              "published",
+            createdBy:
+              "admin1",
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      setDoc(
+        doc(
+          db,
+          "contentReminders",
+          "student1",
+          "items",
+          "event1",
+        ),
+        {
+          uid:
+            "student1",
+          contentId:
+            "event1",
+          kind:
+            "event",
+          remindAt:
+            new Date(
+              "2030-04-30T15:00:00Z",
+            ),
+          targetAt:
+            target,
+          deliveredAt:
+            null,
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "User cannot create a reminder for an unpublished event",
+  async () => {
+    await seedAdmin("admin1");
+    await seedStudent("student1");
+
+    const target =
+      new Date(
+        "2030-05-01T15:00:00Z",
+      );
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "communityContent",
+            "event1",
+          ),
+          {
+            kind:
+              "event",
+            title:
+              "Draft event",
+            summary:
+              "Not published.",
+            details: "",
+            category:
+              "Career",
+            organization:
+              "The Study",
+            location:
+              "School auditorium",
+            eventMode:
+              "in_person",
+            startAt:
+              target,
+            endAt: null,
+            deadline: null,
+            eligibility: "",
+            url: "",
+            status:
+              "draft",
+            createdBy:
+              "admin1",
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "contentReminders",
+          "student1",
+          "items",
+          "event1",
+        ),
+        {
+          uid:
+            "student1",
+          contentId:
+            "event1",
+          kind:
+            "event",
+          remindAt:
+            new Date(
+              "2030-04-30T15:00:00Z",
+            ),
+          targetAt:
+            target,
+          deliveredAt:
+            null,
+          createdAt:
+            serverTimestamp(),
+          updatedAt:
+            serverTimestamp(),
+        },
+      ),
+    );
+  },
+);
+
+test(
+  "Another user cannot read a private content reminder",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "contentReminders",
+            "student1",
+            "items",
+            "event1",
+          ),
+          {
+            uid:
+              "student1",
+            contentId:
+              "event1",
+            kind:
+              "event",
+            remindAt:
+              new Date(),
+            targetAt:
+              new Date(),
+            deliveredAt:
+              null,
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student2");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "contentReminders",
+          "student1",
+          "items",
+          "event1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Due reminder can atomically create its own in-app notification",
+  async () => {
+    await seedAdmin("admin1");
+    await seedStudent("student1");
+
+    const target =
+      new Date(
+        "2030-05-01T15:00:00Z",
+      );
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "communityContent",
+            "event1",
+          ),
+          {
+            kind:
+              "event",
+            title:
+              "Alumni careers panel",
+            summary:
+              "A panel with verified alumni.",
+            details: "",
+            category:
+              "Career",
+            organization:
+              "The Study",
+            location:
+              "School auditorium",
+            eventMode:
+              "in_person",
+            startAt:
+              target,
+            endAt: null,
+            deadline: null,
+            eligibility: "",
+            url: "",
+            status:
+              "published",
+            createdBy:
+              "admin1",
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+
+        await setDoc(
+          doc(
+            db,
+            "contentReminders",
+            "student1",
+            "items",
+            "event1",
+          ),
+          {
+            uid:
+              "student1",
+            contentId:
+              "event1",
+            kind:
+              "event",
+            remindAt:
+              new Date(
+                Date.now() -
+                60_000,
+              ),
+            targetAt:
+              target,
+            deliveredAt:
+              null,
+            createdAt:
+              new Date(),
+            updatedAt:
+              new Date(),
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("student1");
+
+    const batch =
+      writeBatch(db);
+
+    batch.set(
+      doc(
+        db,
+        "notifications",
+        "student1",
+        "items",
+        "hub-reminder-event1",
+      ),
+      {
+        recipientId:
+          "student1",
+        actorId:
+          "student1",
+        type:
+          "hub_reminder",
+        entityId:
+          "event1",
+        eventId:
+          "event1",
+        createdAt:
+          serverTimestamp(),
+        readAt: null,
+      },
+    );
+
+    batch.update(
+      doc(
+        db,
+        "contentReminders",
+        "student1",
+        "items",
+        "event1",
+      ),
+      {
+        deliveredAt:
+          serverTimestamp(),
+        updatedAt:
+          serverTimestamp(),
+      },
+    );
+
+    await assertSucceeds(
+      batch.commit(),
+    );
+  },
+);
+
+test(
+  "User cannot forge a hub reminder without a due reminder record",
+  async () => {
+    await seedStudent("student1");
+
+    const db =
+      verifiedDb("student1");
+
+    await assertFails(
+      setDoc(
+        doc(
+          db,
+          "notifications",
+          "student1",
+          "items",
+          "hub-reminder-fake",
+        ),
+        {
+          recipientId:
+            "student1",
+          actorId:
+            "student1",
+          type:
+            "hub_reminder",
+          entityId:
+            "fake",
+          eventId:
+            "fake",
+          createdAt:
+            serverTimestamp(),
+          readAt: null,
+        },
+      ),
+    );
+  },
+);
+

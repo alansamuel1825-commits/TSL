@@ -8,6 +8,9 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import {
+  usePreferences,
+} from "@/components/preferences/PreferencesProvider";
 import { useAuth } from "@/lib/auth/useAuth";
 import { logOut } from "@/lib/firebase/auth";
 import {
@@ -98,9 +101,61 @@ function fieldClassName() {
   return "mt-2 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-400 focus:bg-white focus:ring-4 focus:ring-blue-500/10";
 }
 
+function PreferenceToggle({
+  checked,
+  onChange,
+  title,
+  description,
+}: {
+  checked: boolean;
+  onChange:
+    (checked: boolean) => void;
+  title: string;
+  description: string;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start justify-between gap-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <span>
+        <span className="block text-sm font-semibold text-slate-900">
+          {title}
+        </span>
+
+        <span className="mt-1 block max-w-xl text-xs leading-5 text-slate-500">
+          {description}
+        </span>
+      </span>
+
+      <span className="relative mt-0.5 inline-flex shrink-0 items-center">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) =>
+            onChange(
+              event.target.checked
+            )
+          }
+          className="peer sr-only"
+        />
+
+        <span className="h-6 w-11 rounded-full bg-slate-300 transition peer-checked:bg-blue-700 peer-focus-visible:ring-4 peer-focus-visible:ring-blue-500/20" />
+
+        <span className="absolute left-1 h-4 w-4 rounded-full bg-white shadow-sm transition peer-checked:translate-x-5" />
+      </span>
+    </label>
+  );
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
+
+  const {
+    preferences,
+    updatePreferences,
+    savePreferences,
+    resetPreferences,
+    savingPreferences,
+  } = usePreferences();
 
   const [checking, setChecking] =
     useState(true);
@@ -354,6 +409,37 @@ export default function SettingsPage() {
     }
   }
 
+
+  async function handleSavePreferences() {
+    setError("");
+    setSuccess("");
+
+    try {
+      await savePreferences();
+
+      setSuccess(
+        "Your appearance and accessibility preferences have been saved."
+      );
+    } catch (err) {
+      console.error(err);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to save your display preferences."
+      );
+    }
+  }
+
+  function handleResetPreferences() {
+    resetPreferences();
+
+    setError("");
+    setSuccess(
+      "Display preferences reset to defaults. Save them if you want the reset synced to your account."
+    );
+  }
+
   async function handleSignOut() {
     setSigningOut(true);
 
@@ -420,7 +506,7 @@ export default function SettingsPage() {
               </h1>
 
               <p className="mt-4 max-w-2xl text-base leading-8 text-slate-600">
-                Keep your information accurate so students and alumni can understand who you are and how you participate in The Study community.
+                Manage your profile, account experience and accessibility preferences across The Study Alumni Connect.
               </p>
             </div>
           </div>
@@ -830,9 +916,185 @@ export default function SettingsPage() {
                 <SaveIcon />
                 {saving
                   ? "Saving..."
-                  : "Save changes"}
+                  : "Save profile"}
               </button>
             </div>
+
+            <section
+              aria-labelledby="display-preferences-title"
+              className="mt-10 border-t border-slate-200 pt-8"
+            >
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.15em] text-blue-700">
+                  Personal experience
+                </p>
+
+                <h2
+                  id="display-preferences-title"
+                  className="mt-2 text-xl font-semibold text-slate-950"
+                >
+                  Appearance &amp; accessibility
+                </h2>
+
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+                  These settings apply across Alumni Connect on this device and can be synced privately to your account for use on other devices.
+                </p>
+              </div>
+
+              <div className="mt-7">
+                <p className="text-sm font-semibold text-slate-800">
+                  Theme
+                </p>
+
+                <div
+                  role="radiogroup"
+                  aria-label="Color theme"
+                  className="mt-3 grid gap-3 sm:grid-cols-3"
+                >
+                  {(
+                    [
+                      [
+                        "system",
+                        "System",
+                        "Follow your device",
+                      ],
+                      [
+                        "light",
+                        "Light",
+                        "Always light",
+                      ],
+                      [
+                        "dark",
+                        "Dark",
+                        "Always dark",
+                      ],
+                    ] as const
+                  ).map(
+                    ([
+                      value,
+                      label,
+                      description,
+                    ]) => {
+                      const selected =
+                        preferences.theme ===
+                        value;
+
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          role="radio"
+                          aria-checked={
+                            selected
+                          }
+                          onClick={() =>
+                            updatePreferences({
+                              theme:
+                                value,
+                            })
+                          }
+                          className={[
+                            "rounded-2xl border p-4 text-left transition",
+                            selected
+                              ? "border-blue-500 bg-blue-50 ring-4 ring-blue-500/10"
+                              : "border-slate-200 bg-slate-50 hover:border-slate-300",
+                          ].join(" ")}
+                        >
+                          <span className="block text-sm font-semibold text-slate-900">
+                            {label}
+                          </span>
+
+                          <span className="mt-1 block text-xs leading-5 text-slate-500">
+                            {description}
+                          </span>
+                        </button>
+                      );
+                    }
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-6 space-y-3">
+                <PreferenceToggle
+                  checked={
+                    preferences.textSize ===
+                    "large"
+                  }
+                  onChange={(checked) =>
+                    updatePreferences({
+                      textSize:
+                        checked
+                          ? "large"
+                          : "default",
+                    })
+                  }
+                  title="Larger interface text"
+                  description="Increase the base text size across the platform while preserving responsive layouts."
+                />
+
+                <PreferenceToggle
+                  checked={
+                    preferences.highContrast
+                  }
+                  onChange={(checked) =>
+                    updatePreferences({
+                      highContrast:
+                        checked,
+                    })
+                  }
+                  title="Higher contrast"
+                  description="Strengthen borders, focus indicators and visual separation for easier reading and navigation."
+                />
+
+                <PreferenceToggle
+                  checked={
+                    preferences.reduceMotion
+                  }
+                  onChange={(checked) =>
+                    updatePreferences({
+                      reduceMotion:
+                        checked,
+                    })
+                  }
+                  title="Reduce motion"
+                  description="Minimize animations and transitions. Your device's reduced-motion preference is also respected automatically."
+                />
+              </div>
+
+              <div className="mt-6 flex flex-col gap-3 border-t border-slate-200 pt-6 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs leading-5 text-slate-400">
+                  Changes preview immediately. Saving syncs them to your private account preferences.
+                </p>
+
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={
+                      handleResetPreferences
+                    }
+                    className="rounded-full border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                  >
+                    Reset
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={
+                      handleSavePreferences
+                    }
+                    disabled={
+                      savingPreferences
+                    }
+                    className="inline-flex items-center justify-center gap-2 rounded-full bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <SaveIcon />
+                    {savingPreferences
+                      ? "Saving..."
+                      : "Save preferences"}
+                  </button>
+                </div>
+              </div>
+            </section>
           </div>
 
           <aside className="space-y-5">

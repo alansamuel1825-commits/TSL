@@ -5,6 +5,12 @@ import {
 } from "firebase/app";
 
 import {
+  initializeAppCheck,
+  ReCaptchaEnterpriseProvider,
+  type AppCheck,
+} from "firebase/app-check";
+
+import {
   connectAuthEmulator,
   getAuth,
 } from "firebase/auth";
@@ -73,9 +79,121 @@ const app =
     : initializeApp(firebaseConfig);
 
 
-export const auth = getAuth(app);
+// ------------------------------------------------------------
+// FIREBASE APP CHECK
+// ------------------------------------------------------------
+//
+// Production / real Firebase:
+//   Uses reCAPTCHA Enterprise through Firebase App Check.
+//
+// Local Firebase emulator mode:
+//   App Check is skipped.
+//
+// Local development against REAL Firebase:
+//   Set NEXT_PUBLIC_FIREBASE_APPCHECK_DEBUG=true.
+//   Firebase will print a debug token in the browser console.
+//   Register that token in Firebase Console > App Check.
+//   NEVER commit or share that debug token.
+// ------------------------------------------------------------
 
-export const db = getFirestore(app);
+declare global {
+  var __TSL_FIREBASE_APPCHECK_INSTANCE__:
+    | AppCheck
+    | undefined;
+
+  var __TSL_FIREBASE_EMULATORS_CONNECTED__:
+    | boolean
+    | undefined;
+
+  interface Window {
+    FIREBASE_APPCHECK_DEBUG_TOKEN?:
+      | boolean
+      | string;
+  }
+}
+
+
+const appCheckSiteKey =
+  process.env.NEXT_PUBLIC_FIREBASE_APPCHECK_SITE_KEY;
+
+
+function initializeTSLAppCheck():
+  AppCheck | null {
+  if (
+    typeof window === "undefined" ||
+    useEmulators ||
+    !appCheckSiteKey
+  ) {
+    return null;
+  }
+
+  if (
+    globalThis.__TSL_FIREBASE_APPCHECK_INSTANCE__
+  ) {
+    return globalThis
+      .__TSL_FIREBASE_APPCHECK_INSTANCE__;
+  }
+
+  const useDebugProvider =
+    process.env.NODE_ENV === "development" &&
+    process.env.NEXT_PUBLIC_FIREBASE_APPCHECK_DEBUG === "true";
+
+  if (useDebugProvider) {
+    window.FIREBASE_APPCHECK_DEBUG_TOKEN =
+      true;
+  }
+
+  const instance =
+    initializeAppCheck(app, {
+      provider:
+        new ReCaptchaEnterpriseProvider(
+          appCheckSiteKey
+        ),
+
+      isTokenAutoRefreshEnabled:
+        true,
+    });
+
+  globalThis.__TSL_FIREBASE_APPCHECK_INSTANCE__ =
+    instance;
+
+  console.info(
+    "[TSL Alumni] Firebase App Check initialized."
+  );
+
+  return instance;
+}
+
+
+export const appCheck =
+  initializeTSLAppCheck();
+
+
+if (
+  typeof window !== "undefined" &&
+  !useEmulators &&
+  process.env.NODE_ENV === "production" &&
+  !appCheckSiteKey
+) {
+  console.warn(
+    "[TSL Alumni] App Check site key is not configured."
+  );
+}
+
+
+// ------------------------------------------------------------
+// FIREBASE SERVICES
+// ------------------------------------------------------------
+//
+// App Check is initialized BEFORE Auth and Firestore references
+// are created.
+// ------------------------------------------------------------
+
+export const auth =
+  getAuth(app);
+
+export const db =
+  getFirestore(app);
 
 
 // ------------------------------------------------------------
@@ -89,13 +207,6 @@ export const db = getFirestore(app);
 //
 // Production builds therefore continue using real Firebase.
 // ------------------------------------------------------------
-
-declare global {
-  var __TSL_FIREBASE_EMULATORS_CONNECTED__:
-    | boolean
-    | undefined;
-}
-
 
 if (
   typeof window !== "undefined" &&

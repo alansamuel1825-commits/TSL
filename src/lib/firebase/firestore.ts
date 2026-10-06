@@ -3,19 +3,23 @@ import {
   collection,
   deleteDoc,
   doc,
+  getCountFromServer,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
 } from "firebase/firestore";
 
-import { db } from "./client";
+import { auth, db } from "./client";
 
 
 // ============================================================
@@ -611,6 +615,31 @@ export async function updateAlumniVerification(
     uid
   );
 
+  const adminId =
+    auth.currentUser?.uid;
+
+  if (!adminId) {
+    throw new Error(
+      "Administrator session not available."
+    );
+  }
+
+  const notificationType:
+    NotificationType =
+      status === "verified"
+        ? "alumni_verified"
+        : "alumni_rejected";
+
+  const notificationRef =
+    doc(
+      collection(
+        db,
+        "notifications",
+        uid,
+        "items"
+      )
+    );
+
   const batch = writeBatch(db);
 
   batch.update(alumniRef, {
@@ -631,6 +660,17 @@ export async function updateAlumniVerification(
         : "pending",
     updatedAt: serverTimestamp(),
   });
+
+  batch.set(
+    notificationRef,
+    notificationPayload(
+      uid,
+      adminId,
+      notificationType,
+      uid,
+      uid
+    )
+  );
 
   await batch.commit();
 }
@@ -881,7 +921,16 @@ export async function createMentorshipRequest(
    *
    * Firestore already gives the document its ID.
    */
-  await setDoc(requestRef, {
+  const notificationRef =
+    getNotificationReference(
+      alumniId,
+      `mentorship-requested-${requestRef.id}`
+    );
+
+  const batch =
+    writeBatch(db);
+
+  batch.set(requestRef, {
     studentId,
     alumniId,
     message: cleanMessage,
@@ -889,6 +938,19 @@ export async function createMentorshipRequest(
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+
+  batch.set(
+    notificationRef,
+    notificationPayload(
+      alumniId,
+      studentId,
+      "mentorship_requested",
+      requestRef.id,
+      requestRef.id
+    )
+  );
+
+  await batch.commit();
 
   return requestRef.id;
 }
@@ -1187,6 +1249,23 @@ export async function acceptMentorshipRequest(
             serverTimestamp(),
         }
       );
+
+      const notificationRef =
+        getNotificationReference(
+          studentId,
+          `mentorship-accepted-${requestId}`
+        );
+
+      transaction.set(
+        notificationRef,
+        notificationPayload(
+          studentId,
+          alumniId,
+          "mentorship_accepted",
+          requestId,
+          requestId
+        )
+      );
     }
   );
 
@@ -1221,10 +1300,76 @@ export async function updateMentorshipRequest(
     requestId
   );
 
-  await updateDoc(requestRef, {
+  const requestSnapshot =
+    await getDoc(requestRef);
+
+  if (!requestSnapshot.exists()) {
+    throw new Error(
+      "Mentorship request not found."
+    );
+  }
+
+  const requestData =
+    requestSnapshot.data();
+
+  const studentId =
+    requestData.studentId;
+
+  const alumniId =
+    requestData.alumniId;
+
+  if (
+    typeof studentId !== "string" ||
+    typeof alumniId !== "string"
+  ) {
+    throw new Error(
+      "Invalid mentorship request."
+    );
+  }
+
+  const recipientId =
+    status === "declined"
+      ? studentId
+      : alumniId;
+
+  const actorId =
+    status === "declined"
+      ? alumniId
+      : studentId;
+
+  const notificationType:
+    NotificationType =
+      status === "declined"
+        ? "mentorship_declined"
+        : "mentorship_cancelled";
+
+  const notificationRef =
+    getNotificationReference(
+      recipientId,
+      `mentorship-${status}-${requestId}`
+    );
+
+  const batch =
+    writeBatch(db);
+
+  batch.update(requestRef, {
     status,
-    updatedAt: serverTimestamp(),
+    updatedAt:
+      serverTimestamp(),
   });
+
+  batch.set(
+    notificationRef,
+    notificationPayload(
+      recipientId,
+      actorId,
+      notificationType,
+      requestId,
+      requestId
+    )
+  );
+
+  await batch.commit();
 }
 
 
@@ -1313,14 +1458,61 @@ export async function sendMessage(
     "messages"
   );
 
+  const conversationSnapshot =
+    await getDoc(conversationRef);
+
+  if (!conversationSnapshot.exists()) {
+    throw new Error(
+      "Conversation not found."
+    );
+  }
+
+  const conversationData =
+    conversationSnapshot.data();
+
+  const studentId =
+    conversationData.studentId;
+
+  const alumniId =
+    conversationData.alumniId;
+
+  if (
+    typeof studentId !== "string" ||
+    typeof alumniId !== "string"
+  ) {
+    throw new Error(
+      "Invalid conversation."
+    );
+  }
+
+  let recipientId: string;
+
+  if (senderId === studentId) {
+    recipientId = alumniId;
+  } else if (senderId === alumniId) {
+    recipientId = studentId;
+  } else {
+    throw new Error(
+      "You are not a participant in this conversation."
+    );
+  }
+
   /*
-   * Pre-generate message ID so the message and
-   * conversation preview can be committed together.
+   * Pre-generate message ID so the message,
+   * conversation preview and notification can
+   * be committed together.
    */
   const messageRef =
     doc(messagesRef);
 
-  const batch = writeBatch(db);
+  const notificationRef =
+    getNotificationReference(
+      recipientId,
+      `message-${messageRef.id}`
+    );
+
+  const batch =
+    writeBatch(db);
 
   batch.set(messageRef, {
     senderId,
@@ -1337,11 +1529,17 @@ export async function sendMessage(
     }
   );
 
-  /*
-   * Atomic:
-   * no message without preview update,
-   * no preview update without message.
-   */
+  batch.set(
+    notificationRef,
+    notificationPayload(
+      recipientId,
+      senderId,
+      "new_message",
+      conversationId,
+      messageRef.id
+    )
+  );
+
   await batch.commit();
 }
 
@@ -1580,7 +1778,39 @@ export async function answerQuestion(
     questionId
   );
 
-  await updateDoc(questionRef, {
+  const questionSnapshot =
+    await getDoc(questionRef);
+
+  if (!questionSnapshot.exists()) {
+    throw new Error(
+      "Question not found."
+    );
+  }
+
+  const questionData =
+    questionSnapshot.data();
+
+  const studentId =
+    questionData.studentId;
+
+  if (
+    typeof studentId !== "string"
+  ) {
+    throw new Error(
+      "Invalid question."
+    );
+  }
+
+  const notificationRef =
+    getNotificationReference(
+      studentId,
+      `question-answered-${questionId}`
+    );
+
+  const batch =
+    writeBatch(db);
+
+  batch.update(questionRef, {
     status: "answered",
     answererId,
     answererName,
@@ -1588,6 +1818,19 @@ export async function answerQuestion(
     answeredAt:
       serverTimestamp(),
   });
+
+  batch.set(
+    notificationRef,
+    notificationPayload(
+      studentId,
+      answererId,
+      "question_answered",
+      questionId,
+      questionId
+    )
+  );
+
+  await batch.commit();
 }
 
 
@@ -1848,3 +2091,2433 @@ export async function isBlockedEitherWay(
     secondSnapshot.exists()
   );
 }
+
+
+
+
+// ============================================================
+// COMMUNITY HUB
+// Resources, opportunities and events
+// ============================================================
+
+export const COMMUNITY_CONTENT_KINDS = [
+  "resource",
+  "opportunity",
+  "event",
+] as const;
+
+export type CommunityContentKind =
+  (typeof COMMUNITY_CONTENT_KINDS)[number];
+
+export type CommunityContentStatus =
+  | "draft"
+  | "published";
+
+export interface CommunityContentInput {
+  kind: CommunityContentKind;
+  title: string;
+  summary: string;
+  details: string;
+  category: string;
+  organization: string;
+  location: string;
+  eventMode:
+    | ""
+    | "in_person"
+    | "online"
+    | "hybrid";
+  startAt: string;
+  endAt: string;
+  deadline: string;
+  eligibility: string;
+  url: string;
+  status: CommunityContentStatus;
+}
+
+export interface CommunityContentItem {
+  id: string;
+  kind: CommunityContentKind;
+  title: string;
+  summary: string;
+  details: string;
+  category: string;
+  organization: string;
+  location: string;
+  eventMode:
+    | ""
+    | "in_person"
+    | "online"
+    | "hybrid";
+  startAt?: unknown | null;
+  endAt?: unknown | null;
+  deadline?: unknown | null;
+  eligibility: string;
+  url: string;
+  status: CommunityContentStatus;
+  createdBy: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+function cleanCommunityString(
+  value: string,
+  maxLength: number,
+  label: string,
+  required = false
+): string {
+  const clean =
+    value.trim();
+
+  if (
+    required &&
+    !clean
+  ) {
+    throw new Error(
+      `${label} is required.`
+    );
+  }
+
+  if (
+    clean.length >
+    maxLength
+  ) {
+    throw new Error(
+      `${label} is too long.`
+    );
+  }
+
+  return clean;
+}
+
+function cleanCommunityHttpsUrl(
+  value: string,
+  required: boolean
+): string {
+  const clean =
+    value.trim();
+
+  if (
+    required &&
+    !clean
+  ) {
+    throw new Error(
+      "A source or registration link is required."
+    );
+  }
+
+  if (!clean) {
+    return "";
+  }
+
+  let parsed: URL;
+
+  try {
+    parsed =
+      new URL(clean);
+  } catch {
+    throw new Error(
+      "The link must be a valid HTTPS URL."
+    );
+  }
+
+  if (
+    parsed.protocol !==
+    "https:"
+  ) {
+    throw new Error(
+      "The link must start with https://"
+    );
+  }
+
+  if (
+    clean.length >
+    2048
+  ) {
+    throw new Error(
+      "The link is too long."
+    );
+  }
+
+  return parsed.toString();
+}
+
+function parseDateTimeInput(
+  value: string
+): Timestamp | null {
+  if (!value.trim()) {
+    return null;
+  }
+
+  const date =
+    new Date(value);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    throw new Error(
+      "One of the dates or times is invalid."
+    );
+  }
+
+  return Timestamp.fromDate(
+    date
+  );
+}
+
+function normalizeCommunityContentInput(
+  input: CommunityContentInput
+) {
+  const title =
+    cleanCommunityString(
+      input.title,
+      140,
+      "Title",
+      true
+    );
+
+  const summary =
+    cleanCommunityString(
+      input.summary,
+      350,
+      "Summary",
+      true
+    );
+
+  const details =
+    cleanCommunityString(
+      input.details,
+      4000,
+      "Details"
+    );
+
+  const category =
+    cleanCommunityString(
+      input.category,
+      80,
+      "Category"
+    );
+
+  const organization =
+    cleanCommunityString(
+      input.organization,
+      120,
+      "Organization"
+    );
+
+  const location =
+    cleanCommunityString(
+      input.location,
+      160,
+      "Location"
+    );
+
+  const eligibility =
+    cleanCommunityString(
+      input.eligibility,
+      700,
+      "Eligibility"
+    );
+
+  const requiresUrl =
+    input.kind !==
+    "event";
+
+  const url =
+    cleanCommunityHttpsUrl(
+      input.url,
+      requiresUrl
+    );
+
+  const startAt =
+    parseDateTimeInput(
+      input.startAt
+    );
+
+  const endAt =
+    parseDateTimeInput(
+      input.endAt
+    );
+
+  const deadline =
+    parseDateTimeInput(
+      input.deadline
+    );
+
+  if (
+    input.kind === "event" &&
+    !startAt
+  ) {
+    throw new Error(
+      "Events need a start date and time."
+    );
+  }
+
+  if (
+    startAt &&
+    endAt &&
+    endAt.toMillis() <
+      startAt.toMillis()
+  ) {
+    throw new Error(
+      "Event end time cannot be before its start time."
+    );
+  }
+
+  if (
+    input.kind !== "event" &&
+    input.eventMode
+  ) {
+    throw new Error(
+      "Event format can only be set for events."
+    );
+  }
+
+  return {
+    kind:
+      input.kind,
+    title,
+    summary,
+    details,
+    category,
+    organization,
+    location,
+    eventMode:
+      input.kind === "event"
+        ? input.eventMode
+        : "",
+    startAt:
+      input.kind === "event"
+        ? startAt
+        : null,
+    endAt:
+      input.kind === "event"
+        ? endAt
+        : null,
+    deadline:
+      input.kind === "opportunity"
+        ? deadline
+        : null,
+    eligibility:
+      input.kind === "opportunity"
+        ? eligibility
+        : "",
+    url,
+    status:
+      input.status,
+  };
+}
+
+export async function getPublishedCommunityContent():
+  Promise<CommunityContentItem[]> {
+  const reference =
+    collection(
+      db,
+      "communityContent"
+    );
+
+  const q =
+    query(
+      reference,
+      where(
+        "status",
+        "==",
+        "published"
+      ),
+      limit(150)
+    );
+
+  const snapshot =
+    await getDocs(q);
+
+  const items =
+    snapshot.docs.map(
+      (item) => ({
+        id:
+          item.id,
+        ...item.data(),
+      })
+    ) as CommunityContentItem[];
+
+  return items.sort(
+    (a, b) =>
+      timestampToMillis(
+        b.updatedAt
+      ) -
+      timestampToMillis(
+        a.updatedAt
+      )
+  );
+}
+
+export async function getCommunityContentForAdmin():
+  Promise<CommunityContentItem[]> {
+  const reference =
+    collection(
+      db,
+      "communityContent"
+    );
+
+  const snapshot =
+    await getDocs(
+      query(
+        reference,
+        limit(200)
+      )
+    );
+
+  const items =
+    snapshot.docs.map(
+      (item) => ({
+        id:
+          item.id,
+        ...item.data(),
+      })
+    ) as CommunityContentItem[];
+
+  return items.sort(
+    (a, b) =>
+      timestampToMillis(
+        b.updatedAt
+      ) -
+      timestampToMillis(
+        a.updatedAt
+      )
+  );
+}
+
+export async function createCommunityContent(
+  input: CommunityContentInput
+): Promise<string> {
+  const user =
+    auth.currentUser;
+
+  if (!user) {
+    throw new Error(
+      "Administrator session not available."
+    );
+  }
+
+  const clean =
+    normalizeCommunityContentInput(
+      input
+    );
+
+  const reference =
+    doc(
+      collection(
+        db,
+        "communityContent"
+      )
+    );
+
+  await setDoc(
+    reference,
+    {
+      ...clean,
+      createdBy:
+        user.uid,
+      createdAt:
+        serverTimestamp(),
+      updatedAt:
+        serverTimestamp(),
+    }
+  );
+
+  return reference.id;
+}
+
+export async function updateCommunityContent(
+  itemId: string,
+  input: CommunityContentInput
+): Promise<void> {
+  const clean =
+    normalizeCommunityContentInput(
+      input
+    );
+
+  const reference =
+    doc(
+      db,
+      "communityContent",
+      itemId
+    );
+
+  await updateDoc(
+    reference,
+    {
+      ...clean,
+      updatedAt:
+        serverTimestamp(),
+    }
+  );
+}
+
+export async function deleteCommunityContent(
+  itemId: string
+): Promise<void> {
+  await deleteDoc(
+    doc(
+      db,
+      "communityContent",
+      itemId
+    )
+  );
+}
+
+export async function getSavedCommunityContentIds(
+  userId: string
+): Promise<Set<string>> {
+  const reference =
+    collection(
+      db,
+      "savedContent",
+      userId,
+      "items"
+    );
+
+  const snapshot =
+    await getDocs(
+      query(
+        reference,
+        limit(200)
+      )
+    );
+
+  return new Set(
+    snapshot.docs.map(
+      (item) =>
+        item.id
+    )
+  );
+}
+
+export async function saveCommunityContent(
+  userId: string,
+  contentId: string
+): Promise<void> {
+  if (
+    auth.currentUser?.uid !==
+    userId
+  ) {
+    throw new Error(
+      "Your session does not match this account."
+    );
+  }
+
+  await setDoc(
+    doc(
+      db,
+      "savedContent",
+      userId,
+      "items",
+      contentId
+    ),
+    {
+      uid:
+        userId,
+      contentId,
+      createdAt:
+        serverTimestamp(),
+    }
+  );
+}
+
+export async function unsaveCommunityContent(
+  userId: string,
+  contentId: string
+): Promise<void> {
+  if (
+    auth.currentUser?.uid !==
+    userId
+  ) {
+    throw new Error(
+      "Your session does not match this account."
+    );
+  }
+
+  await deleteDoc(
+    doc(
+      db,
+      "savedContent",
+      userId,
+      "items",
+      contentId
+    )
+  );
+}
+
+
+// ============================================================
+// ADMIN INSIGHTS / PRIVACY-PRESERVING PRODUCT METRICS
+// ============================================================
+
+export type AdminPlatformMetrics = {
+  users: {
+    total: number;
+    active: number;
+    students: number;
+    alumni: number;
+  };
+  alumni: {
+    verified: number;
+    pending: number;
+  };
+  mentorship: {
+    total: number;
+    pending: number;
+    accepted: number;
+    declined: number;
+    cancelled: number;
+  };
+  conversations: number;
+  questions: {
+    total: number;
+    open: number;
+    answered: number;
+  };
+  reports: {
+    open: number;
+  };
+  projects: {
+    published: number;
+  };
+  hub: {
+    publishedTotal: number;
+    resources: number;
+    opportunities: number;
+    events: number;
+  };
+};
+
+async function countCollection(
+  collectionName: string
+): Promise<number> {
+  const snapshot =
+    await getCountFromServer(
+      collection(
+        db,
+        collectionName
+      )
+    );
+
+  return snapshot.data().count;
+}
+
+async function countWhere(
+  collectionName: string,
+  field: string,
+  value: string
+): Promise<number> {
+  const snapshot =
+    await getCountFromServer(
+      query(
+        collection(
+          db,
+          collectionName
+        ),
+        where(
+          field,
+          "==",
+          value
+        )
+      )
+    );
+
+  return snapshot.data().count;
+}
+
+/*
+ * This dashboard intentionally derives counts from the
+ * existing product collections instead of adding user-level
+ * tracking events.
+ *
+ * Benefits:
+ * - no clickstream collection
+ * - no message/search content captured
+ * - no location or device fingerprinting
+ * - no extra per-user analytics profile
+ *
+ * These are operational/product totals only. They are useful
+ * for school governance and health checks, not surveillance.
+ */
+export async function getAdminPlatformMetrics():
+  Promise<AdminPlatformMetrics> {
+  const [
+    totalUsers,
+    activeUsers,
+    students,
+    alumni,
+    verifiedAlumni,
+    pendingAlumni,
+
+    totalMentorship,
+    pendingMentorship,
+    acceptedMentorship,
+    declinedMentorship,
+    cancelledMentorship,
+
+    conversations,
+
+    totalQuestions,
+    openQuestions,
+    answeredQuestions,
+
+    openReports,
+
+    publishedProjects,
+
+    publishedHubTotal,
+    resources,
+    opportunities,
+    events,
+  ] =
+    await Promise.all([
+      countCollection(
+        "users"
+      ),
+      countWhere(
+        "users",
+        "status",
+        "active"
+      ),
+      countWhere(
+        "users",
+        "role",
+        "student"
+      ),
+      countWhere(
+        "users",
+        "role",
+        "alumni"
+      ),
+      countWhere(
+        "alumniProfiles",
+        "verificationStatus",
+        "verified"
+      ),
+      countWhere(
+        "alumniProfiles",
+        "verificationStatus",
+        "pending"
+      ),
+
+      countCollection(
+        "mentorshipRequests"
+      ),
+      countWhere(
+        "mentorshipRequests",
+        "status",
+        "pending"
+      ),
+      countWhere(
+        "mentorshipRequests",
+        "status",
+        "accepted"
+      ),
+      countWhere(
+        "mentorshipRequests",
+        "status",
+        "declined"
+      ),
+      countWhere(
+        "mentorshipRequests",
+        "status",
+        "cancelled"
+      ),
+
+      countCollection(
+        "conversations"
+      ),
+
+      countCollection(
+        "questions"
+      ),
+      countWhere(
+        "questions",
+        "status",
+        "open"
+      ),
+      countWhere(
+        "questions",
+        "status",
+        "answered"
+      ),
+
+      countWhere(
+        "reports",
+        "status",
+        "open"
+      ),
+
+      countWhere(
+        "projects",
+        "status",
+        "published"
+      ),
+
+      countWhere(
+        "communityContent",
+        "status",
+        "published"
+      ),
+      getCountFromServer(
+        query(
+          collection(
+            db,
+            "communityContent"
+          ),
+          where(
+            "status",
+            "==",
+            "published"
+          ),
+          where(
+            "kind",
+            "==",
+            "resource"
+          )
+        )
+      ).then(
+        (snapshot) =>
+          snapshot.data().count
+      ),
+      getCountFromServer(
+        query(
+          collection(
+            db,
+            "communityContent"
+          ),
+          where(
+            "status",
+            "==",
+            "published"
+          ),
+          where(
+            "kind",
+            "==",
+            "opportunity"
+          )
+        )
+      ).then(
+        (snapshot) =>
+          snapshot.data().count
+      ),
+      getCountFromServer(
+        query(
+          collection(
+            db,
+            "communityContent"
+          ),
+          where(
+            "status",
+            "==",
+            "published"
+          ),
+          where(
+            "kind",
+            "==",
+            "event"
+          )
+        )
+      ).then(
+        (snapshot) =>
+          snapshot.data().count
+      ),
+    ]);
+
+  return {
+    users: {
+      total:
+        totalUsers,
+      active:
+        activeUsers,
+      students,
+      alumni,
+    },
+
+    alumni: {
+      verified:
+        verifiedAlumni,
+      pending:
+        pendingAlumni,
+    },
+
+    mentorship: {
+      total:
+        totalMentorship,
+      pending:
+        pendingMentorship,
+      accepted:
+        acceptedMentorship,
+      declined:
+        declinedMentorship,
+      cancelled:
+        cancelledMentorship,
+    },
+
+    conversations,
+
+    questions: {
+      total:
+        totalQuestions,
+      open:
+        openQuestions,
+      answered:
+        answeredQuestions,
+    },
+
+    reports: {
+      open:
+        openReports,
+    },
+
+    projects: {
+      published:
+        publishedProjects,
+    },
+
+    hub: {
+      publishedTotal:
+        publishedHubTotal,
+      resources,
+      opportunities,
+      events,
+    },
+  };
+}
+
+// ============================================================
+// PROJECTS / PORTFOLIO
+// ============================================================
+
+export const PROJECT_CATEGORIES = [
+  "Engineering",
+  "Software",
+  "AI & Data",
+  "Science & Research",
+  "Design",
+  "Entrepreneurship",
+  "Social Impact",
+  "Other",
+] as const;
+
+export type ProjectCategory =
+  (typeof PROJECT_CATEGORIES)[number];
+
+export type ProjectStatus =
+  | "draft"
+  | "published";
+
+export interface ProjectInput {
+  title: string;
+  category: ProjectCategory;
+  summary: string;
+  description: string;
+  role: string;
+  outcome: string;
+  technologies: string[];
+  projectUrl: string;
+  repositoryUrl: string;
+  collaborationWanted: boolean;
+  mentorshipWanted: boolean;
+  status: ProjectStatus;
+}
+
+export interface Project
+  extends ProjectInput {
+  id: string;
+  ownerId: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+function normalizeOptionalHttpsUrl(
+  value: string,
+  label: string
+): string {
+  const clean =
+    value.trim();
+
+  if (!clean) {
+    return "";
+  }
+
+  let parsed: URL;
+
+  try {
+    parsed =
+      new URL(clean);
+  } catch {
+    throw new Error(
+      `${label} must be a valid HTTPS URL.`
+    );
+  }
+
+  if (
+    parsed.protocol !==
+    "https:"
+  ) {
+    throw new Error(
+      `${label} must start with https://`
+    );
+  }
+
+  if (
+    clean.length > 2048
+  ) {
+    throw new Error(
+      `${label} is too long.`
+    );
+  }
+
+  return parsed.toString();
+}
+
+function normalizeProjectInput(
+  input: ProjectInput
+): ProjectInput {
+  const title =
+    input.title.trim();
+
+  const summary =
+    input.summary.trim();
+
+  const description =
+    input.description.trim();
+
+  const role =
+    input.role.trim();
+
+  const outcome =
+    input.outcome.trim();
+
+  if (
+    !title ||
+    title.length > 120
+  ) {
+    throw new Error(
+      "Project title must be between 1 and 120 characters."
+    );
+  }
+
+  if (
+    !PROJECT_CATEGORIES.includes(
+      input.category
+    )
+  ) {
+    throw new Error(
+      "Choose a valid project category."
+    );
+  }
+
+  if (
+    summary.length > 300
+  ) {
+    throw new Error(
+      "Project summary must be 300 characters or fewer."
+    );
+  }
+
+  if (
+    description.length > 5000
+  ) {
+    throw new Error(
+      "Project description must be 5,000 characters or fewer."
+    );
+  }
+
+  if (
+    role.length > 120
+  ) {
+    throw new Error(
+      "Project role must be 120 characters or fewer."
+    );
+  }
+
+  if (
+    outcome.length > 600
+  ) {
+    throw new Error(
+      "Project outcome must be 600 characters or fewer."
+    );
+  }
+
+  if (
+    input.status === "published" &&
+    (
+      !summary ||
+      !description
+    )
+  ) {
+    throw new Error(
+      "Published projects need both a summary and a description."
+    );
+  }
+
+  const technologies =
+    Array.from(
+      new Set(
+        input.technologies
+          .map((item) =>
+            item.trim()
+          )
+          .filter(Boolean)
+      )
+    );
+
+  if (
+    technologies.length > 20
+  ) {
+    throw new Error(
+      "Add no more than 20 technologies or skills."
+    );
+  }
+
+  if (
+    technologies.some(
+      (item) =>
+        item.length > 50
+    )
+  ) {
+    throw new Error(
+      "Each technology or skill must be 50 characters or fewer."
+    );
+  }
+
+  return {
+    title,
+    category:
+      input.category,
+    summary,
+    description,
+    role,
+    outcome,
+    technologies,
+    projectUrl:
+      normalizeOptionalHttpsUrl(
+        input.projectUrl,
+        "Project link"
+      ),
+    repositoryUrl:
+      normalizeOptionalHttpsUrl(
+        input.repositoryUrl,
+        "Repository link"
+      ),
+    collaborationWanted:
+      input.collaborationWanted,
+    mentorshipWanted:
+      input.mentorshipWanted,
+    status:
+      input.status,
+  };
+}
+
+export async function createProject(
+  ownerId: string,
+  input: ProjectInput
+): Promise<string> {
+  if (
+    auth.currentUser?.uid !==
+    ownerId
+  ) {
+    throw new Error(
+      "Your session does not match the project owner."
+    );
+  }
+
+  const clean =
+    normalizeProjectInput(
+      input
+    );
+
+  const reference =
+    doc(
+      collection(
+        db,
+        "projects"
+      )
+    );
+
+  await setDoc(
+    reference,
+    {
+      ownerId,
+      ...clean,
+      createdAt:
+        serverTimestamp(),
+      updatedAt:
+        serverTimestamp(),
+    }
+  );
+
+  return reference.id;
+}
+
+export async function updateProject(
+  projectId: string,
+  ownerId: string,
+  input: ProjectInput
+): Promise<void> {
+  if (
+    auth.currentUser?.uid !==
+    ownerId
+  ) {
+    throw new Error(
+      "Your session does not match the project owner."
+    );
+  }
+
+  const reference =
+    doc(
+      db,
+      "projects",
+      projectId
+    );
+
+  const snapshot =
+    await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    throw new Error(
+      "Project not found."
+    );
+  }
+
+  const current =
+    snapshot.data();
+
+  if (
+    current.ownerId !==
+    ownerId
+  ) {
+    throw new Error(
+      "You can edit only your own projects."
+    );
+  }
+
+  const clean =
+    normalizeProjectInput(
+      input
+    );
+
+  await updateDoc(
+    reference,
+    {
+      ...clean,
+      updatedAt:
+        serverTimestamp(),
+    }
+  );
+}
+
+export async function deleteProject(
+  projectId: string,
+  ownerId: string
+): Promise<void> {
+  const reference =
+    doc(
+      db,
+      "projects",
+      projectId
+    );
+
+  const snapshot =
+    await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    return;
+  }
+
+  const current =
+    snapshot.data();
+
+  if (
+    current.ownerId !==
+      ownerId ||
+    auth.currentUser?.uid !==
+      ownerId
+  ) {
+    throw new Error(
+      "You can delete only your own projects."
+    );
+  }
+
+  await deleteDoc(reference);
+}
+
+export async function getProject(
+  projectId: string
+): Promise<Project | null> {
+  const reference =
+    doc(
+      db,
+      "projects",
+      projectId
+    );
+
+  const snapshot =
+    await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    return null;
+  }
+
+  return {
+    id: snapshot.id,
+    ...snapshot.data(),
+  } as Project;
+}
+
+export async function getPublishedProjects():
+  Promise<Project[]> {
+  const reference =
+    collection(
+      db,
+      "projects"
+    );
+
+  const q =
+    query(
+      reference,
+      where(
+        "status",
+        "==",
+        "published"
+      ),
+      limit(100)
+    );
+
+  const snapshot =
+    await getDocs(q);
+
+  const projects =
+    snapshot.docs.map(
+      (item) => ({
+        id: item.id,
+        ...item.data(),
+      })
+    ) as Project[];
+
+  return projects.sort(
+    (a, b) =>
+      timestampToMillis(
+        b.updatedAt
+      ) -
+      timestampToMillis(
+        a.updatedAt
+      )
+  );
+}
+
+export async function getMyProjects(
+  ownerId: string
+): Promise<Project[]> {
+  const reference =
+    collection(
+      db,
+      "projects"
+    );
+
+  const q =
+    query(
+      reference,
+      where(
+        "ownerId",
+        "==",
+        ownerId
+      ),
+      limit(100)
+    );
+
+  const snapshot =
+    await getDocs(q);
+
+  const projects =
+    snapshot.docs.map(
+      (item) => ({
+        id: item.id,
+        ...item.data(),
+      })
+    ) as Project[];
+
+  return projects.sort(
+    (a, b) =>
+      timestampToMillis(
+        b.updatedAt
+      ) -
+      timestampToMillis(
+        a.updatedAt
+      )
+  );
+}
+
+
+// ============================================================
+// NOTIFICATION PREFERENCES + HUB REMINDERS (PRIVATE)
+// ============================================================
+
+export type ReminderLeadHours =
+  | 12
+  | 24
+  | 48
+  | 72;
+
+export interface NotificationPreferenceValues {
+  mentorshipAlerts: boolean;
+  messageAlerts: boolean;
+  qnaAlerts: boolean;
+  hubReminders: boolean;
+  reminderLeadHours: ReminderLeadHours;
+  timezone: string;
+}
+
+export interface NotificationPreferences
+  extends NotificationPreferenceValues {
+  uid: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export const DEFAULT_NOTIFICATION_PREFERENCES:
+  NotificationPreferenceValues = {
+  mentorshipAlerts: true,
+  messageAlerts: true,
+  qnaAlerts: true,
+  hubReminders: true,
+  reminderLeadHours: 24,
+  timezone: "UTC",
+};
+
+function notificationPreferencesWithDefaults(
+  data:
+    Partial<NotificationPreferences> | null
+): NotificationPreferenceValues {
+  return {
+    mentorshipAlerts:
+      data?.mentorshipAlerts ??
+      DEFAULT_NOTIFICATION_PREFERENCES
+        .mentorshipAlerts,
+
+    messageAlerts:
+      data?.messageAlerts ??
+      DEFAULT_NOTIFICATION_PREFERENCES
+        .messageAlerts,
+
+    qnaAlerts:
+      data?.qnaAlerts ??
+      DEFAULT_NOTIFICATION_PREFERENCES
+        .qnaAlerts,
+
+    hubReminders:
+      data?.hubReminders ??
+      DEFAULT_NOTIFICATION_PREFERENCES
+        .hubReminders,
+
+    reminderLeadHours:
+      data?.reminderLeadHours === 12 ||
+      data?.reminderLeadHours === 24 ||
+      data?.reminderLeadHours === 48 ||
+      data?.reminderLeadHours === 72
+        ? data.reminderLeadHours
+        : DEFAULT_NOTIFICATION_PREFERENCES
+            .reminderLeadHours,
+
+    timezone:
+      typeof data?.timezone === "string" &&
+      data.timezone.trim().length > 0
+        ? data.timezone
+        : DEFAULT_NOTIFICATION_PREFERENCES
+            .timezone,
+  };
+}
+
+export async function getNotificationPreferences(
+  uid: string
+): Promise<NotificationPreferenceValues> {
+  const reference =
+    doc(
+      db,
+      "notificationPreferences",
+      uid
+    );
+
+  const snapshot =
+    await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    return {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+    };
+  }
+
+  return notificationPreferencesWithDefaults(
+    snapshot.data() as
+      Partial<NotificationPreferences>
+  );
+}
+
+export async function saveNotificationPreferences(
+  uid: string,
+  values: NotificationPreferenceValues
+): Promise<void> {
+  if (
+    auth.currentUser?.uid !==
+    uid
+  ) {
+    throw new Error(
+      "Your session does not match these notification preferences."
+    );
+  }
+
+  if (
+    ![12, 24, 48, 72].includes(
+      values.reminderLeadHours
+    )
+  ) {
+    throw new Error(
+      "Choose a supported reminder time."
+    );
+  }
+
+  const timezone =
+    values.timezone.trim();
+
+  if (
+    !timezone ||
+    timezone.length > 80
+  ) {
+    throw new Error(
+      "Invalid timezone."
+    );
+  }
+
+  const reference =
+    doc(
+      db,
+      "notificationPreferences",
+      uid
+    );
+
+  const snapshot =
+    await getDoc(reference);
+
+  const payload = {
+    mentorshipAlerts:
+      values.mentorshipAlerts,
+    messageAlerts:
+      values.messageAlerts,
+    qnaAlerts:
+      values.qnaAlerts,
+    hubReminders:
+      values.hubReminders,
+    reminderLeadHours:
+      values.reminderLeadHours,
+    timezone,
+    updatedAt:
+      serverTimestamp(),
+  };
+
+  if (!snapshot.exists()) {
+    await setDoc(
+      reference,
+      {
+        uid,
+        ...payload,
+        createdAt:
+          serverTimestamp(),
+      }
+    );
+
+    return;
+  }
+
+  await updateDoc(
+    reference,
+    payload
+  );
+}
+
+export function subscribeToNotificationPreferences(
+  uid: string,
+  callback: (
+    preferences:
+      NotificationPreferenceValues
+  ) => void
+) {
+  const reference =
+    doc(
+      db,
+      "notificationPreferences",
+      uid
+    );
+
+  return onSnapshot(
+    reference,
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        callback({
+          ...DEFAULT_NOTIFICATION_PREFERENCES,
+        });
+
+        return;
+      }
+
+      callback(
+        notificationPreferencesWithDefaults(
+          snapshot.data() as
+            Partial<NotificationPreferences>
+        )
+      );
+    }
+  );
+}
+
+export type ContentReminderKind =
+  | "event"
+  | "opportunity";
+
+export interface ContentReminder {
+  id: string;
+  uid: string;
+  contentId: string;
+  kind: ContentReminderKind;
+  remindAt: unknown;
+  targetAt: unknown;
+  deliveredAt?: unknown | null;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+function getReminderReference(
+  uid: string,
+  contentId: string
+) {
+  return doc(
+    db,
+    "contentReminders",
+    uid,
+    "items",
+    contentId
+  );
+}
+
+function getReminderNotificationReference(
+  uid: string,
+  contentId: string
+) {
+  return doc(
+    db,
+    "notifications",
+    uid,
+    "items",
+    `hub-reminder-${contentId}`
+  );
+}
+
+function reminderTargetMillis(
+  item: CommunityContentItem
+): number {
+  if (
+    item.kind === "event"
+  ) {
+    return timestampToMillis(
+      item.startAt
+    );
+  }
+
+  if (
+    item.kind === "opportunity"
+  ) {
+    return timestampToMillis(
+      item.deadline
+    );
+  }
+
+  return 0;
+}
+
+export async function getContentReminders(
+  uid: string
+): Promise<ContentReminder[]> {
+  const reference =
+    collection(
+      db,
+      "contentReminders",
+      uid,
+      "items"
+    );
+
+  const snapshot =
+    await getDocs(
+      query(
+        reference,
+        limit(100)
+      )
+    );
+
+  const reminders =
+    snapshot.docs.map(
+      (item) => ({
+        id:
+          item.id,
+        ...item.data(),
+      })
+    ) as ContentReminder[];
+
+  return reminders.sort(
+    (a, b) =>
+      timestampToMillis(
+        a.targetAt
+      ) -
+      timestampToMillis(
+        b.targetAt
+      )
+  );
+}
+
+export async function getContentReminderIds(
+  uid: string
+): Promise<Set<string>> {
+  const reminders =
+    await getContentReminders(
+      uid
+    );
+
+  return new Set(
+    reminders.map(
+      (item) =>
+        item.contentId
+    )
+  );
+}
+
+export async function scheduleContentReminder(
+  uid: string,
+  item: CommunityContentItem,
+  leadHours: ReminderLeadHours
+): Promise<void> {
+  if (
+    auth.currentUser?.uid !==
+    uid
+  ) {
+    throw new Error(
+      "Your session does not match this reminder."
+    );
+  }
+
+  if (
+    item.kind !== "event" &&
+    item.kind !== "opportunity"
+  ) {
+    throw new Error(
+      "Only events and opportunities can have reminders."
+    );
+  }
+
+  const targetMillis =
+    reminderTargetMillis(
+      item
+    );
+
+  if (
+    !targetMillis
+  ) {
+    throw new Error(
+      "This item does not have a reminder date yet."
+    );
+  }
+
+  if (
+    targetMillis <=
+    Date.now()
+  ) {
+    throw new Error(
+      "This date has already passed."
+    );
+  }
+
+  const reminderMillis =
+    Math.max(
+      Date.now(),
+      targetMillis -
+        leadHours *
+          60 *
+          60 *
+          1000
+    );
+
+  const reminderRef =
+    getReminderReference(
+      uid,
+      item.id
+    );
+
+  const notificationRef =
+    getReminderNotificationReference(
+      uid,
+      item.id
+    );
+
+  const reminderSnapshot =
+    await getDoc(
+      reminderRef
+    );
+
+  const notificationSnapshot =
+    await getDoc(
+      notificationRef
+    );
+
+  const batch =
+    writeBatch(db);
+
+  if (
+    notificationSnapshot.exists()
+  ) {
+    batch.delete(
+      notificationRef
+    );
+  }
+
+  const payload = {
+    uid,
+    contentId:
+      item.id,
+    kind:
+      item.kind,
+    remindAt:
+      Timestamp.fromMillis(
+        reminderMillis
+      ),
+    targetAt:
+      Timestamp.fromMillis(
+        targetMillis
+      ),
+    deliveredAt:
+      null,
+    updatedAt:
+      serverTimestamp(),
+  };
+
+  if (
+    reminderSnapshot.exists()
+  ) {
+    batch.update(
+      reminderRef,
+      payload
+    );
+  } else {
+    batch.set(
+      reminderRef,
+      {
+        ...payload,
+        createdAt:
+          serverTimestamp(),
+      }
+    );
+  }
+
+  await batch.commit();
+}
+
+export async function cancelContentReminder(
+  uid: string,
+  contentId: string
+): Promise<void> {
+  if (
+    auth.currentUser?.uid !==
+    uid
+  ) {
+    throw new Error(
+      "Your session does not match this reminder."
+    );
+  }
+
+  const reminderRef =
+    getReminderReference(
+      uid,
+      contentId
+    );
+
+  const notificationRef =
+    getReminderNotificationReference(
+      uid,
+      contentId
+    );
+
+  const [
+    reminderSnapshot,
+    notificationSnapshot,
+  ] =
+    await Promise.all([
+      getDoc(
+        reminderRef
+      ),
+      getDoc(
+        notificationRef
+      ),
+    ]);
+
+  if (
+    !reminderSnapshot.exists() &&
+    !notificationSnapshot.exists()
+  ) {
+    return;
+  }
+
+  const batch =
+    writeBatch(db);
+
+  if (
+    reminderSnapshot.exists()
+  ) {
+    batch.delete(
+      reminderRef
+    );
+  }
+
+  if (
+    notificationSnapshot.exists()
+  ) {
+    batch.delete(
+      notificationRef
+    );
+  }
+
+  await batch.commit();
+}
+
+/*
+ * In-app reminder bridge:
+ *
+ * When the app is open, returns online, or is reopened,
+ * due reminders are converted into normal private in-app
+ * notifications.
+ *
+ * This is deliberately NOT described as background push.
+ * Reliable closed-app push requires a trusted server-side
+ * scheduler + FCM, which we will add only when that backend
+ * is approved/configured.
+ */
+export async function materializeDueContentReminders(
+  uid: string
+): Promise<number> {
+  if (
+    auth.currentUser?.uid !==
+    uid
+  ) {
+    return 0;
+  }
+
+  const preferences =
+    await getNotificationPreferences(
+      uid
+    );
+
+  if (
+    !preferences.hubReminders
+  ) {
+    return 0;
+  }
+
+  const reminderRef =
+    collection(
+      db,
+      "contentReminders",
+      uid,
+      "items"
+    );
+
+  const snapshot =
+    await getDocs(
+      query(
+        reminderRef,
+        where(
+          "deliveredAt",
+          "==",
+          null
+        ),
+        limit(100)
+      )
+    );
+
+  const now =
+    Date.now();
+
+  const due =
+    snapshot.docs.filter(
+      (item) => {
+        const data =
+          item.data();
+
+        const remindMillis =
+          timestampToMillis(
+            data.remindAt
+          );
+
+        return (
+          remindMillis > 0 &&
+          remindMillis <= now
+        );
+      }
+    );
+
+  for (
+    const item of due
+  ) {
+    const data =
+      item.data();
+
+    const contentId =
+      typeof data.contentId ===
+      "string"
+        ? data.contentId
+        : "";
+
+    if (!contentId) {
+      continue;
+    }
+
+    const batch =
+      writeBatch(db);
+
+    batch.set(
+      getReminderNotificationReference(
+        uid,
+        contentId
+      ),
+      notificationPayload(
+        uid,
+        uid,
+        "hub_reminder",
+        contentId,
+        contentId
+      )
+    );
+
+    batch.update(
+      item.ref,
+      {
+        deliveredAt:
+          serverTimestamp(),
+        updatedAt:
+          serverTimestamp(),
+      }
+    );
+
+    await batch.commit();
+  }
+
+  return due.length;
+}
+
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
+export type NotificationType =
+  | "mentorship_requested"
+  | "mentorship_accepted"
+  | "mentorship_declined"
+  | "mentorship_cancelled"
+  | "new_message"
+  | "question_answered"
+  | "hub_reminder"
+  | "alumni_verified"
+  | "alumni_rejected";
+
+export type AppNotification = {
+  id: string;
+  recipientId: string;
+  actorId: string;
+  type: NotificationType;
+  entityId: string;
+  eventId: string;
+  createdAt?: unknown;
+  readAt?: unknown | null;
+};
+
+function getNotificationReference(
+  recipientId: string,
+  notificationId: string
+) {
+  return doc(
+    db,
+    "notifications",
+    recipientId,
+    "items",
+    notificationId
+  );
+}
+
+function notificationPayload(
+  recipientId: string,
+  actorId: string,
+  type: NotificationType,
+  entityId: string,
+  eventId: string
+) {
+  return {
+    recipientId,
+    actorId,
+    type,
+    entityId,
+    eventId,
+    createdAt: serverTimestamp(),
+    readAt: null,
+  };
+}
+
+function notificationTypeEnabled(
+  type: NotificationType,
+  preferences:
+    NotificationPreferenceValues
+): boolean {
+  switch (type) {
+    case "mentorship_requested":
+    case "mentorship_accepted":
+    case "mentorship_declined":
+    case "mentorship_cancelled":
+      return preferences
+        .mentorshipAlerts;
+
+    case "new_message":
+      return preferences
+        .messageAlerts;
+
+    case "question_answered":
+      return preferences
+        .qnaAlerts;
+
+    case "hub_reminder":
+      return preferences
+        .hubReminders;
+
+    case "alumni_verified":
+    case "alumni_rejected":
+      /*
+       * School verification/account-state notices remain
+       * visible because they affect account capabilities.
+       */
+      return true;
+  }
+}
+
+export function subscribeToNotifications(
+  userId: string,
+  callback: (
+    notifications: AppNotification[]
+  ) => void
+) {
+  const notificationsRef =
+    collection(
+      db,
+      "notifications",
+      userId,
+      "items"
+    );
+
+  const notificationsQuery =
+    query(
+      notificationsRef,
+      orderBy(
+        "createdAt",
+        "desc"
+      ),
+      limit(50)
+    );
+
+  let currentNotifications:
+    AppNotification[] = [];
+
+  let currentPreferences:
+    NotificationPreferenceValues = {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+    };
+
+  const emit =
+    () => {
+      callback(
+        currentNotifications.filter(
+          (item) =>
+            notificationTypeEnabled(
+              item.type,
+              currentPreferences
+            )
+        )
+      );
+    };
+
+  const unsubscribeNotifications =
+    onSnapshot(
+      notificationsQuery,
+      (snapshot) => {
+        currentNotifications =
+          snapshot.docs.map(
+            (item) => ({
+              id:
+                item.id,
+              ...item.data(),
+            })
+          ) as AppNotification[];
+
+        emit();
+      }
+    );
+
+  const unsubscribePreferences =
+    subscribeToNotificationPreferences(
+      userId,
+      (preferences) => {
+        currentPreferences =
+          preferences;
+
+        emit();
+      }
+    );
+
+  return () => {
+    unsubscribeNotifications();
+    unsubscribePreferences();
+  };
+}
+
+export function subscribeToUnreadNotificationCount(
+  userId: string,
+  callback: (count: number) => void
+) {
+  const notificationsRef =
+    collection(
+      db,
+      "notifications",
+      userId,
+      "items"
+    );
+
+  const unreadQuery =
+    query(
+      notificationsRef,
+      where(
+        "readAt",
+        "==",
+        null
+      ),
+      limit(100)
+    );
+
+  let unreadNotifications:
+    AppNotification[] = [];
+
+  let currentPreferences:
+    NotificationPreferenceValues = {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+    };
+
+  const emit =
+    () => {
+      callback(
+        unreadNotifications.filter(
+          (item) =>
+            notificationTypeEnabled(
+              item.type,
+              currentPreferences
+            )
+        ).length
+      );
+    };
+
+  const unsubscribeNotifications =
+    onSnapshot(
+      unreadQuery,
+      (snapshot) => {
+        unreadNotifications =
+          snapshot.docs.map(
+            (item) => ({
+              id:
+                item.id,
+              ...item.data(),
+            })
+          ) as AppNotification[];
+
+        emit();
+      }
+    );
+
+  const unsubscribePreferences =
+    subscribeToNotificationPreferences(
+      userId,
+      (preferences) => {
+        currentPreferences =
+          preferences;
+
+        emit();
+      }
+    );
+
+  return () => {
+    unsubscribeNotifications();
+    unsubscribePreferences();
+  };
+}
+
+export async function markNotificationRead(
+  userId: string,
+  notificationId: string
+): Promise<void> {
+  const reference =
+    getNotificationReference(
+      userId,
+      notificationId
+    );
+
+  const snapshot =
+    await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    return;
+  }
+
+  const data =
+    snapshot.data() as AppNotification;
+
+  if (data.readAt) {
+    return;
+  }
+
+  await updateDoc(reference, {
+    readAt: serverTimestamp(),
+  });
+}
+
+export async function markAllNotificationsRead(
+  userId: string
+): Promise<void> {
+  const notificationsRef = collection(
+    db,
+    "notifications",
+    userId,
+    "items"
+  );
+
+  const unreadQuery = query(
+    notificationsRef,
+    where("readAt", "==", null),
+    limit(100)
+  );
+
+  const snapshot =
+    await getDocs(unreadQuery);
+
+  if (snapshot.empty) {
+    return;
+  }
+
+  const batch =
+    writeBatch(db);
+
+  snapshot.docs.forEach((item) => {
+    batch.update(item.ref, {
+      readAt: serverTimestamp(),
+    });
+  });
+
+  await batch.commit();
+}
+
+// ============================================================
+// USER PREFERENCES (PRIVATE)
+// ============================================================
+
+export type ThemePreference =
+  | "system"
+  | "light"
+  | "dark";
+
+export type TextSizePreference =
+  | "default"
+  | "large";
+
+export interface UserPreferenceValues {
+  theme: ThemePreference;
+  textSize: TextSizePreference;
+  highContrast: boolean;
+  reduceMotion: boolean;
+}
+
+export interface UserPreferences
+  extends UserPreferenceValues {
+  uid: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export const DEFAULT_USER_PREFERENCES:
+  UserPreferenceValues = {
+  theme: "system",
+  textSize: "default",
+  highContrast: false,
+  reduceMotion: false,
+};
+
+export async function getUserPreferences(
+  uid: string
+): Promise<UserPreferences | null> {
+  const reference = doc(
+    db,
+    "userPreferences",
+    uid
+  );
+
+  const snapshot =
+    await getDoc(reference);
+
+  if (!snapshot.exists()) {
+    return null;
+  }
+
+  return snapshot.data() as UserPreferences;
+}
+
+export async function saveUserPreferences(
+  uid: string,
+  values: UserPreferenceValues
+): Promise<void> {
+  const reference = doc(
+    db,
+    "userPreferences",
+    uid
+  );
+
+  const snapshot =
+    await getDoc(reference);
+
+  const payload = {
+    theme: values.theme,
+    textSize: values.textSize,
+    highContrast:
+      values.highContrast,
+    reduceMotion:
+      values.reduceMotion,
+    updatedAt:
+      serverTimestamp(),
+  };
+
+  if (!snapshot.exists()) {
+    await setDoc(reference, {
+      uid,
+      ...payload,
+      createdAt:
+        serverTimestamp(),
+    });
+
+    return;
+  }
+
+  await updateDoc(
+    reference,
+    payload
+  );
+}
+

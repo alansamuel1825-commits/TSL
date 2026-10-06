@@ -101,6 +101,207 @@ service cloud.firestore {
         );
     }
 
+
+    function validOptionalHttpsURL(value) {
+      return value is string
+        && value.size() <= 2048
+        && (
+          value.size() == 0
+          || value.matches('https://.*')
+        );
+    }
+
+
+    function validRequiredHttpsURL(value) {
+      return value is string
+        && value.size() > 0
+        && value.size() <= 2048
+        && value.matches('https://.*');
+    }
+
+    function validOptionalTimestamp(value) {
+      return value == null
+        || value is timestamp;
+    }
+
+    function validCommunityContent(data) {
+      return data.kind in [
+          'resource',
+          'opportunity',
+          'event'
+        ]
+
+        && validRequiredString(
+          data.title,
+          140
+        )
+
+        && validRequiredString(
+          data.summary,
+          350
+        )
+
+        && validOptionalString(
+          data.details,
+          4000
+        )
+
+        && validOptionalString(
+          data.category,
+          80
+        )
+
+        && validOptionalString(
+          data.organization,
+          120
+        )
+
+        && validOptionalString(
+          data.location,
+          160
+        )
+
+        && validOptionalString(
+          data.eligibility,
+          700
+        )
+
+        && data.eventMode in [
+          '',
+          'in_person',
+          'online',
+          'hybrid'
+        ]
+
+        && validOptionalTimestamp(
+          data.startAt
+        )
+
+        && validOptionalTimestamp(
+          data.endAt
+        )
+
+        && validOptionalTimestamp(
+          data.deadline
+        )
+
+        && validOptionalHttpsURL(
+          data.url
+        )
+
+        && data.status in [
+          'draft',
+          'published'
+        ]
+
+        && (
+          (
+            data.kind == 'resource'
+            && validRequiredHttpsURL(
+              data.url
+            )
+            && data.eventMode == ''
+            && data.startAt == null
+            && data.endAt == null
+            && data.deadline == null
+            && data.eligibility == ''
+          )
+          ||
+          (
+            data.kind == 'opportunity'
+            && validRequiredHttpsURL(
+              data.url
+            )
+            && data.eventMode == ''
+            && data.startAt == null
+            && data.endAt == null
+          )
+          ||
+          (
+            data.kind == 'event'
+            && data.startAt is timestamp
+            && data.deadline == null
+            && data.eligibility == ''
+            && (
+              data.endAt == null
+              || data.endAt >= data.startAt
+            )
+          )
+        );
+    }
+
+    function validProjectData(data) {
+      return validRequiredString(
+          data.title,
+          120
+        )
+
+        && data.category in [
+          'Engineering',
+          'Software',
+          'AI & Data',
+          'Science & Research',
+          'Design',
+          'Entrepreneurship',
+          'Social Impact',
+          'Other'
+        ]
+
+        && validOptionalString(
+          data.summary,
+          300
+        )
+
+        && validOptionalString(
+          data.description,
+          5000
+        )
+
+        && validOptionalString(
+          data.role,
+          120
+        )
+
+        && validOptionalString(
+          data.outcome,
+          600
+        )
+
+        && data.technologies is list
+        && data.technologies.size() <= 20
+
+        && validOptionalHttpsURL(
+          data.projectUrl
+        )
+
+        && validOptionalHttpsURL(
+          data.repositoryUrl
+        )
+
+        && data.collaborationWanted is bool
+        && data.mentorshipWanted is bool
+
+        && data.status in [
+          'draft',
+          'published'
+        ]
+
+        && (
+          data.status == 'draft'
+          ||
+          (
+            validRequiredString(
+              data.summary,
+              300
+            )
+            && validRequiredString(
+              data.description,
+              5000
+            )
+          )
+        );
+    }
+
     function alumniProfileExists(userId) {
       return exists(
         /databases/$(database)/documents/alumniProfiles/$(userId)
@@ -1370,6 +1571,1050 @@ service cloud.firestore {
         );
 
       allow update: if false;
+    }
+
+
+
+
+
+
+    // =========================================================
+    // COMMUNITY HUB
+    // Resources, opportunities and events
+    // =========================================================
+
+    match /communityContent/{contentId} {
+
+      /*
+       * Published content is available to active TSL community
+       * members. Drafts remain school-admin only.
+       */
+      allow read: if hasCurrentUser()
+        && (
+          isAdmin()
+          ||
+          (
+            resource.data.status
+              == 'published'
+            && isActiveUser()
+          )
+        );
+
+      /*
+       * Curated hub content is school-controlled.
+       * Ordinary members cannot publish links/events/opportunities.
+       */
+      allow create: if isAdmin()
+
+        && request.resource.data.keys().hasOnly([
+          'kind',
+          'title',
+          'summary',
+          'details',
+          'category',
+          'organization',
+          'location',
+          'eventMode',
+          'startAt',
+          'endAt',
+          'deadline',
+          'eligibility',
+          'url',
+          'status',
+          'createdBy',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'kind',
+          'title',
+          'summary',
+          'details',
+          'category',
+          'organization',
+          'location',
+          'eventMode',
+          'startAt',
+          'endAt',
+          'deadline',
+          'eligibility',
+          'url',
+          'status',
+          'createdBy',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.createdBy
+          == request.auth.uid
+
+        && validCommunityContent(
+          request.resource.data
+        )
+
+        && request.resource.data.createdAt
+          == request.time
+
+        && request.resource.data.updatedAt
+          == request.time;
+
+      allow update: if isAdmin()
+
+        && request.resource.data.createdBy
+          == resource.data.createdBy
+
+        && request.resource.data.createdAt
+          == resource.data.createdAt
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'kind',
+            'title',
+            'summary',
+            'details',
+            'category',
+            'organization',
+            'location',
+            'eventMode',
+            'startAt',
+            'endAt',
+            'deadline',
+            'eligibility',
+            'url',
+            'status',
+            'updatedAt'
+          ])
+
+        && validCommunityContent(
+          request.resource.data
+        )
+
+        && request.resource.data.updatedAt
+          == request.time;
+
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================================
+    // SAVED HUB CONTENT (PRIVATE)
+    // =========================================================
+
+    match /savedContent/{userId}/items/{contentId} {
+
+      allow read: if hasCurrentUser()
+        && request.auth.uid
+          == userId;
+
+      allow create: if isActiveUser()
+        && request.auth.uid
+          == userId
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'contentId',
+          'createdAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'contentId',
+          'createdAt'
+        ])
+
+        && request.resource.data.uid
+          == userId
+
+        && request.resource.data.contentId
+          == contentId
+
+        && request.resource.data.createdAt
+          == request.time
+
+        && exists(
+          /databases/$(database)/documents/communityContent/$(contentId)
+        )
+
+        && get(
+          /databases/$(database)/documents/communityContent/$(contentId)
+        ).data.status
+          == 'published';
+
+      allow update: if false;
+
+      allow delete: if hasCurrentUser()
+        && request.auth.uid
+          == userId;
+    }
+
+
+    // =========================================================
+    // PROJECTS / PORTFOLIO
+    // =========================================================
+
+    match /projects/{projectId} {
+
+      /*
+       * Drafts remain private to the owner and school admins.
+       * Published projects are visible only to active,
+       * verified-email TSL community members.
+       */
+      allow read: if hasCurrentUser()
+        && (
+          request.auth.uid == resource.data.ownerId
+          || isAdmin()
+          ||
+          (
+            resource.data.status == 'published'
+            && isActiveUser()
+          )
+        );
+
+      /*
+       * Only active community members may create projects.
+       * Pending alumni therefore cannot publish or create a
+       * portfolio until school verification is complete.
+       */
+      allow create: if isActiveUser()
+
+        && request.resource.data.keys().hasOnly([
+          'ownerId',
+          'title',
+          'category',
+          'summary',
+          'description',
+          'role',
+          'outcome',
+          'technologies',
+          'projectUrl',
+          'repositoryUrl',
+          'collaborationWanted',
+          'mentorshipWanted',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'ownerId',
+          'title',
+          'category',
+          'summary',
+          'description',
+          'role',
+          'outcome',
+          'technologies',
+          'projectUrl',
+          'repositoryUrl',
+          'collaborationWanted',
+          'mentorshipWanted',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.ownerId
+          == request.auth.uid
+
+        && validProjectData(
+          request.resource.data
+        )
+
+        && request.resource.data.createdAt
+          == request.time
+
+        && request.resource.data.updatedAt
+          == request.time;
+
+      /*
+       * Owners may edit content and change draft/published state.
+       * Ownership and creation timestamp are immutable.
+       */
+      allow update: if isActiveUser()
+
+        && resource.data.ownerId
+          == request.auth.uid
+
+        && request.resource.data.ownerId
+          == resource.data.ownerId
+
+        && request.resource.data.createdAt
+          == resource.data.createdAt
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'title',
+            'category',
+            'summary',
+            'description',
+            'role',
+            'outcome',
+            'technologies',
+            'projectUrl',
+            'repositoryUrl',
+            'collaborationWanted',
+            'mentorshipWanted',
+            'status',
+            'updatedAt'
+          ])
+
+        && validProjectData(
+          request.resource.data
+        )
+
+        && request.resource.data.updatedAt
+          == request.time;
+
+      /*
+       * Owners retain the ability to delete their own project
+       * even if their account later stops being active.
+       * School admins may also remove a project for moderation.
+       */
+      allow delete: if hasCurrentUser()
+        && (
+          resource.data.ownerId
+            == request.auth.uid
+          || isAdmin()
+        );
+    }
+
+
+    // =========================================================
+    // NOTIFICATIONS
+    // =========================================================
+
+    match /notifications/{recipientId}/items/{notificationId} {
+
+      allow read: if hasCurrentUser()
+        && request.auth.uid == recipientId;
+
+      allow create: if hasCurrentUser()
+
+        && request.resource.data.keys().hasOnly([
+          'recipientId',
+          'actorId',
+          'type',
+          'entityId',
+          'eventId',
+          'createdAt',
+          'readAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'recipientId',
+          'actorId',
+          'type',
+          'entityId',
+          'eventId',
+          'createdAt',
+          'readAt'
+        ])
+
+        && request.resource.data.recipientId
+          == recipientId
+
+        && request.resource.data.actorId
+          is string
+
+        && request.resource.data.entityId
+          is string
+
+        && request.resource.data.eventId
+          is string
+
+        && request.resource.data.createdAt
+          == request.time
+
+        && request.resource.data.readAt
+          == null
+
+        && (
+
+          (
+            request.resource.data.type
+              == 'mentorship_requested'
+
+            && request.resource.data.actorId
+              == request.auth.uid
+
+            && request.resource.data.entityId
+              == request.resource.data.eventId
+
+            && notificationId
+              == 'mentorship-requested-'
+                + request.resource.data.eventId
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.studentId
+              == request.auth.uid
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.alumniId
+              == recipientId
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.status
+              == 'pending'
+          )
+
+          ||
+
+          (
+            request.resource.data.type
+              == 'mentorship_accepted'
+
+            && request.resource.data.actorId
+              == request.auth.uid
+
+            && request.resource.data.entityId
+              == request.resource.data.eventId
+
+            && notificationId
+              == 'mentorship-accepted-'
+                + request.resource.data.eventId
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.alumniId
+              == request.auth.uid
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.studentId
+              == recipientId
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.status
+              == 'accepted'
+          )
+
+          ||
+
+          (
+            request.resource.data.type
+              == 'mentorship_declined'
+
+            && request.resource.data.actorId
+              == request.auth.uid
+
+            && request.resource.data.entityId
+              == request.resource.data.eventId
+
+            && notificationId
+              == 'mentorship-declined-'
+                + request.resource.data.eventId
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.alumniId
+              == request.auth.uid
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.studentId
+              == recipientId
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.status
+              == 'declined'
+          )
+
+          ||
+
+          (
+            request.resource.data.type
+              == 'mentorship_cancelled'
+
+            && request.resource.data.actorId
+              == request.auth.uid
+
+            && request.resource.data.entityId
+              == request.resource.data.eventId
+
+            && notificationId
+              == 'mentorship-cancelled-'
+                + request.resource.data.eventId
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.studentId
+              == request.auth.uid
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.alumniId
+              == recipientId
+
+            && getAfter(
+              /databases/$(database)/documents/mentorshipRequests/$(request.resource.data.entityId)
+            ).data.status
+              == 'cancelled'
+          )
+
+          ||
+
+          (
+            request.resource.data.type
+              == 'new_message'
+
+            && request.resource.data.actorId
+              == request.auth.uid
+
+            && notificationId
+              == 'message-'
+                + request.resource.data.eventId
+
+            && getAfter(
+              /databases/$(database)/documents/conversations/$(request.resource.data.entityId)/messages/$(request.resource.data.eventId)
+            ).data.senderId
+              == request.auth.uid
+
+            && (
+              (
+                conversationDoc(
+                  request.resource.data.entityId
+                ).data.studentId
+                  == request.auth.uid
+
+                && conversationDoc(
+                  request.resource.data.entityId
+                ).data.alumniId
+                  == recipientId
+              )
+              ||
+              (
+                conversationDoc(
+                  request.resource.data.entityId
+                ).data.alumniId
+                  == request.auth.uid
+
+                && conversationDoc(
+                  request.resource.data.entityId
+                ).data.studentId
+                  == recipientId
+              )
+            )
+          )
+
+          ||
+
+          (
+            request.resource.data.type
+              == 'question_answered'
+
+            && request.resource.data.actorId
+              == request.auth.uid
+
+            && request.resource.data.entityId
+              == request.resource.data.eventId
+
+            && notificationId
+              == 'question-answered-'
+                + request.resource.data.eventId
+
+            && getAfter(
+              /databases/$(database)/documents/questions/$(request.resource.data.entityId)
+            ).data.answererId
+              == request.auth.uid
+
+            && getAfter(
+              /databases/$(database)/documents/questions/$(request.resource.data.entityId)
+            ).data.studentId
+              == recipientId
+
+            && getAfter(
+              /databases/$(database)/documents/questions/$(request.resource.data.entityId)
+            ).data.status
+              == 'answered'
+          )
+
+          ||
+
+          (
+            isActiveUser()
+
+            && recipientId
+              == request.auth.uid
+
+            && request.resource.data.type
+              == 'hub_reminder'
+
+            && request.resource.data.actorId
+              == request.auth.uid
+
+            && request.resource.data.entityId
+              == request.resource.data.eventId
+
+            && notificationId
+              == 'hub-reminder-'
+                + request.resource.data.entityId
+
+            && exists(
+              /databases/$(database)/documents/contentReminders/$(recipientId)/items/$(request.resource.data.entityId)
+            )
+
+            && get(
+              /databases/$(database)/documents/contentReminders/$(recipientId)/items/$(request.resource.data.entityId)
+            ).data.uid
+              == request.auth.uid
+
+            && get(
+              /databases/$(database)/documents/contentReminders/$(recipientId)/items/$(request.resource.data.entityId)
+            ).data.contentId
+              == request.resource.data.entityId
+
+            && get(
+              /databases/$(database)/documents/contentReminders/$(recipientId)/items/$(request.resource.data.entityId)
+            ).data.deliveredAt
+              == null
+
+            && get(
+              /databases/$(database)/documents/contentReminders/$(recipientId)/items/$(request.resource.data.entityId)
+            ).data.remindAt
+              <= request.time
+          )
+
+          ||
+
+          (
+            isAdmin()
+
+            && request.resource.data.type
+              in [
+                'alumni_verified',
+                'alumni_rejected'
+              ]
+
+            && request.resource.data.actorId
+              == request.auth.uid
+
+            && request.resource.data.entityId
+              == recipientId
+
+            && request.resource.data.eventId
+              == recipientId
+
+            && (
+              (
+                request.resource.data.type
+                  == 'alumni_verified'
+
+                && getAfter(
+                  /databases/$(database)/documents/alumniProfiles/$(recipientId)
+                ).data.verificationStatus
+                  == 'verified'
+              )
+              ||
+              (
+                request.resource.data.type
+                  == 'alumni_rejected'
+
+                && getAfter(
+                  /databases/$(database)/documents/alumniProfiles/$(recipientId)
+                ).data.verificationStatus
+                  == 'rejected'
+              )
+            )
+          )
+        );
+
+      allow update: if hasCurrentUser()
+        && request.auth.uid == recipientId
+
+        && resource.data.readAt == null
+
+        && request.resource.data.readAt
+          == request.time
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'readAt'
+          ]);
+
+      allow delete: if hasCurrentUser()
+        && request.auth.uid == recipientId;
+    }
+
+
+
+    // =========================================================
+    // NOTIFICATION PREFERENCES (PRIVATE)
+    // =========================================================
+
+    match /notificationPreferences/{userId} {
+
+      allow read: if hasCurrentUser()
+        && request.auth.uid == userId;
+
+      allow create: if hasCurrentUser()
+        && request.auth.uid == userId
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'mentorshipAlerts',
+          'messageAlerts',
+          'qnaAlerts',
+          'hubReminders',
+          'reminderLeadHours',
+          'timezone',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'mentorshipAlerts',
+          'messageAlerts',
+          'qnaAlerts',
+          'hubReminders',
+          'reminderLeadHours',
+          'timezone',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.uid
+          == userId
+
+        && request.resource.data.mentorshipAlerts
+          is bool
+
+        && request.resource.data.messageAlerts
+          is bool
+
+        && request.resource.data.qnaAlerts
+          is bool
+
+        && request.resource.data.hubReminders
+          is bool
+
+        && request.resource.data.reminderLeadHours
+          in [12, 24, 48, 72]
+
+        && request.resource.data.timezone
+          is string
+
+        && request.resource.data.timezone.size()
+          > 0
+
+        && request.resource.data.timezone.size()
+          <= 80
+
+        && request.resource.data.createdAt
+          == request.time
+
+        && request.resource.data.updatedAt
+          == request.time;
+
+      allow update: if hasCurrentUser()
+        && request.auth.uid == userId
+
+        && request.resource.data.uid
+          == resource.data.uid
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'mentorshipAlerts',
+            'messageAlerts',
+            'qnaAlerts',
+            'hubReminders',
+            'reminderLeadHours',
+            'timezone',
+            'updatedAt'
+          ])
+
+        && request.resource.data.mentorshipAlerts
+          is bool
+
+        && request.resource.data.messageAlerts
+          is bool
+
+        && request.resource.data.qnaAlerts
+          is bool
+
+        && request.resource.data.hubReminders
+          is bool
+
+        && request.resource.data.reminderLeadHours
+          in [12, 24, 48, 72]
+
+        && request.resource.data.timezone
+          is string
+
+        && request.resource.data.timezone.size()
+          > 0
+
+        && request.resource.data.timezone.size()
+          <= 80
+
+        && request.resource.data.updatedAt
+          == request.time;
+
+      allow delete: if hasCurrentUser()
+        && request.auth.uid == userId;
+    }
+
+
+    // =========================================================
+    // HUB CONTENT REMINDERS (PRIVATE)
+    // =========================================================
+
+    match /contentReminders/{userId}/items/{contentId} {
+
+      allow read: if hasCurrentUser()
+        && request.auth.uid == userId;
+
+      allow create: if isActiveUser()
+        && request.auth.uid == userId
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'contentId',
+          'kind',
+          'remindAt',
+          'targetAt',
+          'deliveredAt',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'contentId',
+          'kind',
+          'remindAt',
+          'targetAt',
+          'deliveredAt',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.uid
+          == userId
+
+        && request.resource.data.contentId
+          == contentId
+
+        && request.resource.data.kind
+          in [
+            'event',
+            'opportunity'
+          ]
+
+        && request.resource.data.remindAt
+          is timestamp
+
+        && request.resource.data.targetAt
+          is timestamp
+
+        && request.resource.data.remindAt
+          <= request.resource.data.targetAt
+
+        && request.resource.data.deliveredAt
+          == null
+
+        && request.resource.data.createdAt
+          == request.time
+
+        && request.resource.data.updatedAt
+          == request.time
+
+        && exists(
+          /databases/$(database)/documents/communityContent/$(contentId)
+        )
+
+        && get(
+          /databases/$(database)/documents/communityContent/$(contentId)
+        ).data.status
+          == 'published'
+
+        && get(
+          /databases/$(database)/documents/communityContent/$(contentId)
+        ).data.kind
+          == request.resource.data.kind
+
+        && (
+          (
+            request.resource.data.kind
+              == 'event'
+
+            && get(
+              /databases/$(database)/documents/communityContent/$(contentId)
+            ).data.startAt
+              == request.resource.data.targetAt
+          )
+          ||
+          (
+            request.resource.data.kind
+              == 'opportunity'
+
+            && get(
+              /databases/$(database)/documents/communityContent/$(contentId)
+            ).data.deadline
+              == request.resource.data.targetAt
+          )
+        );
+
+      allow update: if hasCurrentUser()
+        && request.auth.uid == userId
+
+        && request.resource.data.uid
+          == resource.data.uid
+
+        && request.resource.data.contentId
+          == resource.data.contentId
+
+        && request.resource.data.kind
+          == resource.data.kind
+
+        && request.resource.data.targetAt
+          == resource.data.targetAt
+
+        && request.resource.data.createdAt
+          == resource.data.createdAt
+
+        && request.resource.data.remindAt
+          is timestamp
+
+        && request.resource.data.remindAt
+          <= request.resource.data.targetAt
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'remindAt',
+            'deliveredAt',
+            'updatedAt'
+          ])
+
+        && request.resource.data.updatedAt
+          == request.time
+
+        && (
+          (
+            resource.data.deliveredAt
+              == null
+
+            && request.resource.data.deliveredAt
+              == null
+          )
+          ||
+          (
+            resource.data.deliveredAt
+              == null
+
+            && resource.data.remindAt
+              <= request.time
+
+            && request.resource.data.remindAt
+              == resource.data.remindAt
+
+            && request.resource.data.deliveredAt
+              == request.time
+          )
+        );
+
+      allow delete: if hasCurrentUser()
+        && request.auth.uid == userId;
+    }
+
+
+    // =========================================================
+    // USER PREFERENCES (PRIVATE)
+    // =========================================================
+
+    match /userPreferences/{userId} {
+
+      /*
+       * Display/accessibility preferences are private.
+       * School admins do not need blanket access to them.
+       */
+      allow read: if hasCurrentUser()
+        && request.auth.uid == userId;
+
+      allow create: if hasCurrentUser()
+        && request.auth.uid == userId
+
+        && request.resource.data.keys().hasOnly([
+          'uid',
+          'theme',
+          'textSize',
+          'highContrast',
+          'reduceMotion',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.keys().hasAll([
+          'uid',
+          'theme',
+          'textSize',
+          'highContrast',
+          'reduceMotion',
+          'createdAt',
+          'updatedAt'
+        ])
+
+        && request.resource.data.uid == userId
+
+        && request.resource.data.theme
+          in ['system', 'light', 'dark']
+
+        && request.resource.data.textSize
+          in ['default', 'large']
+
+        && request.resource.data.highContrast is bool
+
+        && request.resource.data.reduceMotion is bool
+
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if hasCurrentUser()
+        && request.auth.uid == userId
+
+        && request.resource.data.uid == resource.data.uid
+
+        && request.resource.data
+          .diff(resource.data)
+          .affectedKeys()
+          .hasOnly([
+            'theme',
+            'textSize',
+            'highContrast',
+            'reduceMotion',
+            'updatedAt'
+          ])
+
+        && request.resource.data.theme
+          in ['system', 'light', 'dark']
+
+        && request.resource.data.textSize
+          in ['default', 'large']
+
+        && request.resource.data.highContrast is bool
+
+        && request.resource.data.reduceMotion is bool
+
+        && request.resource.data.updatedAt == request.time;
+
+      allow delete: if hasCurrentUser()
+        && request.auth.uid == userId;
     }
 
 
