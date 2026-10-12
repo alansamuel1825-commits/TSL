@@ -97,7 +97,168 @@ export function friendlyGeminiFailure(
     return "Gemini rejected this request. Check the configured model name and API key setup.";
   }
 
+  if (
+    status === 503 ||
+    status === 502 ||
+    status === 504
+  ) {
+    return "Gemini is currently under high demand. Please try again in a moment.";
+  }
+
   return "TSL Assist is temporarily unavailable.";
+}
+
+async function logGeminiHttpFailure(
+  phase: "planner" | "stream",
+  response: Response
+): Promise<void> {
+  let providerStatus =
+    "";
+
+  let providerMessage =
+    "";
+
+  try {
+    const payload =
+      await response.clone().json() as {
+        error?: {
+          status?: unknown;
+          message?: unknown;
+        };
+      };
+
+    if (
+      typeof payload.error?.status ===
+      "string"
+    ) {
+      providerStatus =
+        payload.error.status;
+    }
+
+    if (
+      typeof payload.error?.message ===
+      "string"
+    ) {
+      providerMessage =
+        payload.error.message.slice(
+          0,
+          500
+        );
+    }
+  } catch {
+    /*
+     * Provider errors are normally JSON. If not, the HTTP status
+     * below is still enough for diagnosis. Do not log prompts,
+     * auth tokens, API keys, or request bodies.
+     */
+  }
+
+  console.error(
+    "[TSL Assist] Gemini HTTP failure:",
+    {
+      phase,
+      httpStatus:
+        response.status,
+      statusText:
+        response.statusText,
+      providerStatus:
+        providerStatus ||
+        undefined,
+      providerMessage:
+        providerMessage ||
+        undefined,
+    }
+  );
+}
+
+function retryableGeminiStatus(
+  status: number
+): boolean {
+  return (
+    status === 429 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+}
+
+function wait(
+  milliseconds: number
+): Promise<void> {
+  return new Promise(
+    (resolve) => {
+      setTimeout(
+        resolve,
+        milliseconds
+      );
+    }
+  );
+}
+
+async function fetchGeminiWithRetry({
+  phase,
+  url,
+  init,
+}: {
+  phase: "planner" | "stream";
+  url: string;
+  init: RequestInit;
+}): Promise<Response> {
+  const retryDelays =
+    [
+      700,
+      1800,
+    ];
+
+  for (
+    let attempt = 0;
+    attempt <=
+      retryDelays.length;
+    attempt += 1
+  ) {
+    const response =
+      await fetch(
+        url,
+        init
+      );
+
+    if (
+      response.ok ||
+      !retryableGeminiStatus(
+        response.status
+      ) ||
+      attempt ===
+        retryDelays.length
+    ) {
+      return response;
+    }
+
+    await logGeminiHttpFailure(
+      phase,
+      response
+    );
+
+    console.warn(
+      "[TSL Assist] Retrying Gemini after transient provider failure:",
+      {
+        phase,
+        attempt:
+          attempt + 1,
+        httpStatus:
+          response.status,
+      }
+    );
+
+    await wait(
+      retryDelays[
+        attempt
+      ]
+    );
+  }
+
+  throw new Error(
+    "Gemini retry loop ended unexpectedly."
+  );
 }
 
 export async function planWithGemini({
@@ -110,11 +271,16 @@ export async function planWithGemini({
   tools: unknown[];
 }): Promise<GeminiPlannerResult> {
   const response =
-    await fetch(
-      endpoint(
-        "generateContent"
-      ),
-      {
+    await fetchGeminiWithRetry({
+      phase:
+        "planner",
+
+      url:
+        endpoint(
+          "generateContent"
+        ),
+
+      init: {
         method:
           "POST",
 
@@ -146,12 +312,17 @@ export async function planWithGemini({
 
         cache:
           "no-store",
-      }
-    );
+      },
+    });
 
   if (
     !response.ok
   ) {
+    await logGeminiHttpFailure(
+      "planner",
+      response
+    );
+
     const error =
       new Error(
         friendlyGeminiFailure(
@@ -252,11 +423,16 @@ export async function streamWithGemini({
   contents: GeminiContent[];
 }): Promise<Response> {
   const response =
-    await fetch(
-      `${endpoint(
-        "streamGenerateContent"
-      )}?alt=sse`,
-      {
+    await fetchGeminiWithRetry({
+      phase:
+        "stream",
+
+      url:
+        `${endpoint(
+          "streamGenerateContent"
+        )}?alt=sse`,
+
+      init: {
         method:
           "POST",
 
@@ -286,12 +462,17 @@ export async function streamWithGemini({
 
         cache:
           "no-store",
-      }
-    );
+      },
+    });
 
   if (
     !response.ok
   ) {
+    await logGeminiHttpFailure(
+      "stream",
+      response
+    );
+
     const error =
       new Error(
         friendlyGeminiFailure(

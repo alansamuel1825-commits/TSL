@@ -14,8 +14,16 @@ import {
 } from "next/navigation";
 
 import {
+  getToken as getAppCheckToken,
+} from "firebase/app-check";
+
+import {
   useAuth,
 } from "@/lib/auth/useAuth";
+
+import {
+  appCheck,
+} from "@/lib/firebase/client";
 
 import type {
   AssistClientMessage,
@@ -768,6 +776,26 @@ export default function AssistPage() {
       const token =
         await user.getIdToken();
 
+      if (!appCheck) {
+        throw new Error(
+          "App verification is unavailable. Refresh the page and try again."
+        );
+      }
+
+      const appCheckToken =
+        await getAppCheckToken(
+          appCheck,
+          false
+        );
+
+      if (
+        !appCheckToken.token
+      ) {
+        throw new Error(
+          "App verification failed. Refresh the page and try again."
+        );
+      }
+
       const payloadMessages =
         history
           .slice(
@@ -796,6 +824,8 @@ export default function AssistPage() {
                 `Bearer ${token}`,
               "Content-Type":
                 "application/json",
+              "X-Firebase-AppCheck":
+                appCheckToken.token,
             },
 
             body:

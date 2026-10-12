@@ -1,5 +1,6 @@
 import {
   createVerify,
+  webcrypto,
 } from "node:crypto";
 
 import {
@@ -48,6 +49,23 @@ type PlatformUserAccount = {
   role: "student" | "alumni";
   status: "active" | "pending";
   isAdmin: boolean;
+};
+
+type AppCheckClaims = {
+  aud?: unknown;
+  iss?: unknown;
+  sub?: unknown;
+  exp?: unknown;
+  iat?: unknown;
+};
+
+type AppCheckJwk = {
+  kid?: string;
+  kty?: string;
+  alg?: string;
+  use?: string;
+  n?: string;
+  e?: string;
 };
 
 type FirebaseClaims = {
@@ -110,6 +128,9 @@ type ExecutedTool = {
 const CERTS_URL =
   "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
 
+const APP_CHECK_JWKS_URL =
+  "https://firebaseappcheck.googleapis.com/v1/jwks";
+
 const encoder =
   new TextEncoder();
 
@@ -127,6 +148,14 @@ let certCache:
         string,
         string
       >;
+  } | null =
+  null;
+
+let appCheckJwkCache:
+  {
+    expiresAt: number;
+    keys:
+      AppCheckJwk[];
   } | null =
   null;
 
@@ -328,6 +357,304 @@ function parseBase64UrlJson(
       "base64url"
     ).toString("utf8")
   );
+}
+
+async function appCheckJwks():
+  Promise<
+    AppCheckJwk[]
+  > {
+  if (
+    appCheckJwkCache &&
+    appCheckJwkCache.expiresAt >
+      Date.now()
+  ) {
+    return appCheckJwkCache.keys;
+  }
+
+  const response =
+    await fetch(
+      APP_CHECK_JWKS_URL,
+      {
+        cache:
+          "no-store",
+      }
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      "Unable to verify App Check."
+    );
+  }
+
+  const payload =
+    await response.json() as {
+      keys?: AppCheckJwk[];
+    };
+
+  const keys =
+    Array.isArray(
+      payload.keys
+    )
+      ? payload.keys
+      : [];
+
+  if (
+    keys.length ===
+    0
+  ) {
+    throw new Error(
+      "App Check signing keys are unavailable."
+    );
+  }
+
+  const cacheControl =
+    response.headers.get(
+      "cache-control"
+    ) || "";
+
+  const match =
+    cacheControl.match(
+      /max-age=(\d+)/
+    );
+
+  const seconds =
+    match
+      ? Number(
+          match[1]
+        )
+      : 21600;
+
+  /*
+   * Firebase documentation recommends caching App Check
+   * public keys for up to six hours.
+   */
+  appCheckJwkCache = {
+    keys,
+    expiresAt:
+      Date.now() +
+      Math.min(
+        21600,
+        Math.max(
+          60,
+          Number.isFinite(
+            seconds
+          )
+            ? seconds
+            : 21600
+        )
+      ) *
+        1000,
+  };
+
+  return keys;
+}
+
+async function verifyAppCheckToken({
+  token,
+  projectId,
+  projectNumber,
+  appId,
+}: {
+  token: string;
+  projectId: string;
+  projectNumber: string;
+  appId: string;
+}): Promise<void> {
+  const tokenParts =
+    token.split(".");
+
+  if (
+    tokenParts.length !==
+    3
+  ) {
+    throw new Error(
+      "Invalid App Check token."
+    );
+  }
+
+  const header =
+    parseBase64UrlJson(
+      tokenParts[0]
+    ) as {
+      alg?: unknown;
+      typ?: unknown;
+      kid?: unknown;
+    };
+
+  const claims =
+    parseBase64UrlJson(
+      tokenParts[1]
+    ) as AppCheckClaims;
+
+  if (
+    header.alg !==
+      "RS256" ||
+    header.typ !==
+      "JWT" ||
+    typeof header.kid !==
+      "string" ||
+    !header.kid
+  ) {
+    throw new Error(
+      "Invalid App Check token."
+    );
+  }
+
+  let keys =
+    await appCheckJwks();
+
+  let jwk =
+    keys.find(
+      (candidate) =>
+        candidate.kid ===
+        header.kid
+    );
+
+  if (!jwk) {
+    appCheckJwkCache =
+      null;
+
+    keys =
+      await appCheckJwks();
+
+    jwk =
+      keys.find(
+        (candidate) =>
+          candidate.kid ===
+          header.kid
+      );
+  }
+
+  if (
+    !jwk ||
+    jwk.kty !==
+      "RSA" ||
+    jwk.alg !==
+      "RS256"
+  ) {
+    throw new Error(
+      "Unknown App Check signing key."
+    );
+  }
+
+  if (
+    typeof jwk.n !==
+      "string" ||
+    typeof jwk.e !==
+      "string"
+  ) {
+    throw new Error(
+      "Invalid App Check signing key."
+    );
+  }
+
+  const cryptoKey =
+    await webcrypto.subtle.importKey(
+      "jwk",
+      {
+        kty:
+          "RSA",
+        n:
+          jwk.n,
+        e:
+          jwk.e,
+        alg:
+          "RS256",
+        ext:
+          true,
+        key_ops: [
+          "verify",
+        ],
+      },
+      {
+        name:
+          "RSASSA-PKCS1-v1_5",
+        hash:
+          "SHA-256",
+      },
+      false,
+      [
+        "verify",
+      ]
+    );
+
+  const signature =
+    Uint8Array.from(
+      Buffer.from(
+        tokenParts[2],
+        "base64url"
+      )
+    );
+
+  const signedData =
+    encoder.encode(
+      `${tokenParts[0]}.${tokenParts[1]}`
+    );
+
+  const valid =
+    await webcrypto.subtle.verify(
+      {
+        name:
+          "RSASSA-PKCS1-v1_5",
+      },
+      cryptoKey,
+      signature,
+      signedData
+    );
+
+  if (!valid) {
+    throw new Error(
+      "Invalid App Check signature."
+    );
+  }
+
+  const now =
+    Math.floor(
+      Date.now() /
+        1000
+    );
+
+  const audience =
+    Array.isArray(
+      claims.aud
+    )
+      ? claims.aud
+      : [];
+
+  const expectedAudiences =
+    new Set([
+      `projects/${projectId}`,
+      `projects/${projectNumber}`,
+    ]);
+
+  const hasExpectedAudience =
+    audience.some(
+      (value) =>
+        typeof value ===
+          "string" &&
+        expectedAudiences.has(
+          value
+        )
+    );
+
+  if (
+    claims.iss !==
+      `https://firebaseappcheck.googleapis.com/${projectNumber}` ||
+    !hasExpectedAudience ||
+    claims.sub !==
+      appId ||
+    typeof claims.exp !==
+      "number" ||
+    claims.exp <= now ||
+    typeof claims.iat !==
+      "number" ||
+    claims.iat >
+      now + 60
+  ) {
+    throw new Error(
+      "Expired or invalid App Check token."
+    );
+  }
 }
 
 async function firebaseCerts():
@@ -2528,10 +2855,49 @@ export async function POST(
     process.env
       .NEXT_PUBLIC_FIREBASE_PROJECT_ID;
 
-  if (!projectId) {
+  const projectNumber =
+    process.env
+      .NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
+
+  const appId =
+    process.env
+      .NEXT_PUBLIC_FIREBASE_APP_ID;
+
+  if (
+    !projectId ||
+    !projectNumber ||
+    !appId
+  ) {
     return errorResponse(
       "Firebase project configuration is missing.",
       500
+    );
+  }
+
+  const appCheckToken =
+    request.headers.get(
+      "x-firebase-appcheck"
+    ) || "";
+
+  if (!appCheckToken) {
+    return errorResponse(
+      "App verification required.",
+      401
+    );
+  }
+
+  try {
+    await verifyAppCheckToken({
+      token:
+        appCheckToken,
+      projectId,
+      projectNumber,
+      appId,
+    });
+  } catch {
+    return errorResponse(
+      "This request could not be verified as coming from TSL Alumni Connect.",
+      401
     );
   }
 
