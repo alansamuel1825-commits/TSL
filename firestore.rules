@@ -842,7 +842,7 @@ service cloud.firestore {
         && (
           (
             resource.data.verificationStatus == 'verified'
-            && hasCurrentUser()
+            && isActiveUser()
           )
           || request.auth.uid == userId
           || isAdmin()
@@ -1184,11 +1184,19 @@ service cloud.firestore {
 
     match /conversations/{conversationId} {
 
-      allow read: if emailVerified()
-        && (
-          resource.data.studentId == request.auth.uid
-          || resource.data.alumniId == request.auth.uid
-          || isAdmin()
+      /*
+       * Conversation history is private to active participants.
+       * If an account is later suspended/rejected/pending, that
+       * account loses direct conversation access. School admins
+       * retain moderation access.
+       */
+      allow read: if isAdmin()
+        || (
+          isActiveUser()
+          && (
+            resource.data.studentId == request.auth.uid
+            || resource.data.alumniId == request.auth.uid
+          )
         );
 
       /*
@@ -1290,10 +1298,10 @@ service cloud.firestore {
         /*
          * Blocking does not erase existing message history.
          */
-        allow read: if emailVerified()
-          && (
-            isConversationParticipant(conversationId)
-            || isAdmin()
+        allow read: if isAdmin()
+          || (
+            isActiveUser()
+            && isConversationParticipant(conversationId)
           );
 
         allow create: if isActiveUser()
@@ -1343,10 +1351,18 @@ service cloud.firestore {
 
     match /questions/{questionId} {
 
+      /*
+       * Students can read only their own questions.
+       * Verified alumni may read the Q&A board in order to answer.
+       * School admins retain moderation access.
+       */
       allow read: if
-        isStudent()
-        || isVerifiedAlumni()
-        || isAdmin();
+        isVerifiedAlumni()
+        || isAdmin()
+        || (
+          isStudent()
+          && resource.data.studentId == request.auth.uid
+        );
 
       allow create: if isStudent()
 

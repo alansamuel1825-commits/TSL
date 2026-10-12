@@ -1241,6 +1241,71 @@ test(
 );
 
 test(
+  "Pending alumni cannot browse another verified alumni profile",
+  async () => {
+    await seedPendingAlumni();
+    await seedVerifiedAlumni("alumni1");
+
+    const db =
+      verifiedDb(
+        "pendingAlumni",
+      );
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "alumniProfiles",
+          "alumni1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Rejected alumni cannot browse another verified alumni profile",
+  async () => {
+    await seedUser(
+      "rejectedAlumni",
+      {
+        role: "alumni",
+        status: "pending",
+        displayName:
+          "Rejected Alumni",
+      },
+    );
+
+    await seedAlumniProfile(
+      "rejectedAlumni",
+      {
+        verificationStatus:
+          "rejected",
+        mentorshipAvailable:
+          false,
+      },
+    );
+
+    await seedVerifiedAlumni("alumni1");
+
+    const db =
+      verifiedDb(
+        "rejectedAlumni",
+      );
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "alumniProfiles",
+          "alumni1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
   "Pending alumni cannot verify their own alumni profile",
   async () => {
     await seedPendingAlumni();
@@ -1984,9 +2049,158 @@ test(
 );
 
 
+test(
+  "Inactive alumni participant cannot read an existing conversation",
+  async () => {
+    await seedStudent();
+
+    await seedUser(
+      "alumni1",
+      {
+        role: "alumni",
+        status: "pending",
+        displayName: "Alumni",
+      },
+    );
+
+    await seedAlumniProfile(
+      "alumni1",
+      {
+        verificationStatus:
+          "rejected",
+        mentorshipAvailable:
+          false,
+      },
+    );
+
+    await seedConversation();
+
+    const db =
+      verifiedDb("alumni1");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "conversations",
+          "request1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Active student retains access to conversation after alumni becomes inactive",
+  async () => {
+    await seedStudent();
+
+    await seedUser(
+      "alumni1",
+      {
+        role: "alumni",
+        status: "pending",
+        displayName: "Alumni",
+      },
+    );
+
+    await seedAlumniProfile(
+      "alumni1",
+      {
+        verificationStatus:
+          "rejected",
+        mentorshipAvailable:
+          false,
+      },
+    );
+
+    await seedConversation();
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      getDoc(
+        doc(
+          db,
+          "conversations",
+          "request1",
+        ),
+      ),
+    );
+  },
+);
+
+
 // ============================================================
 // MESSAGES
 // ============================================================
+
+test(
+  "Inactive alumni participant cannot read existing message history",
+  async () => {
+    await seedStudent();
+
+    await seedUser(
+      "alumni1",
+      {
+        role: "alumni",
+        status: "pending",
+        displayName: "Alumni",
+      },
+    );
+
+    await seedAlumniProfile(
+      "alumni1",
+      {
+        verificationStatus:
+          "rejected",
+        mentorshipAvailable:
+          false,
+      },
+    );
+
+    await seedConversation();
+
+    await testEnv.withSecurityRulesDisabled(
+      async (context) => {
+        const db =
+          context.firestore();
+
+        await setDoc(
+          doc(
+            db,
+            "conversations",
+            "request1",
+            "messages",
+            "message1",
+          ),
+          {
+            senderId:
+              "student1",
+            text:
+              "Existing message",
+          },
+        );
+      },
+    );
+
+    const db =
+      verifiedDb("alumni1");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "conversations",
+          "request1",
+          "messages",
+          "message1",
+        ),
+      ),
+    );
+  },
+);
 
 test(
   "Blocking prevents new messages at database level",
@@ -2202,6 +2416,71 @@ test(
 // ============================================================
 // ASK AN ALUMNI
 // ============================================================
+
+test(
+  "Student can read their own Q&A question",
+  async () => {
+    await seedStudent("student1");
+    await seedQuestion();
+
+    const db =
+      verifiedDb("student1");
+
+    await assertSucceeds(
+      getDoc(
+        doc(
+          db,
+          "questions",
+          "question1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Student cannot read another student's Q&A question",
+  async () => {
+    await seedStudent("student1");
+    await seedStudent("student2");
+    await seedQuestion();
+
+    const db =
+      verifiedDb("student2");
+
+    await assertFails(
+      getDoc(
+        doc(
+          db,
+          "questions",
+          "question1",
+        ),
+      ),
+    );
+  },
+);
+
+test(
+  "Verified alumni can read Q&A questions",
+  async () => {
+    await seedStudent();
+    await seedVerifiedAlumni();
+    await seedQuestion();
+
+    const db =
+      verifiedDb("alumni1");
+
+    await assertSucceeds(
+      getDoc(
+        doc(
+          db,
+          "questions",
+          "question1",
+        ),
+      ),
+    );
+  },
+);
 
 test(
   "Pending alumni cannot read Q&A",
@@ -4937,4 +5216,3 @@ test(
     );
   },
 );
-
