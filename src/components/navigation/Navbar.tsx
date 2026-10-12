@@ -35,7 +35,16 @@ export default function Navbar() {
   const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   useEffect(() => {
+    /*
+     * During first-time onboarding the authenticated Firebase user
+     * exists before users/{uid} has been created.
+     *
+     * Notification + notification-preference rules intentionally
+     * require that private user document, so subscribing here too
+     * early causes permission-denied snapshot-listener noise.
+     */
     if (
+      pathname === "/onboarding" ||
       !user ||
       !user.emailVerified
     ) {
@@ -50,7 +59,7 @@ export default function Navbar() {
       );
 
     return unsubscribe;
-  }, [user]);
+  }, [user, pathname]);
 
   // The homepage has its own landing-page navigation.
   if (pathname === "/") {
