@@ -43,6 +43,13 @@ type VerifiedFirebaseUser = {
   uid: string;
 };
 
+type PlatformUserAccount = {
+  uid: string;
+  role: "student" | "alumni";
+  status: "active" | "pending";
+  isAdmin: boolean;
+};
+
 type FirebaseClaims = {
   aud?: unknown;
   iss?: unknown;
@@ -898,6 +905,106 @@ function documentData(
       ]
     )
   );
+}
+
+async function loadPlatformUserAccount({
+  firebaseToken,
+  projectId,
+  uid,
+}: {
+  firebaseToken: string;
+  projectId: string;
+  uid: string;
+}): Promise<PlatformUserAccount | null> {
+  const response =
+    await fetch(
+      `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+        projectId
+      )}/databases/(default)/documents/users/${encodeURIComponent(
+        uid
+      )}`,
+      {
+        method:
+          "GET",
+
+        headers: {
+          Authorization:
+            `Bearer ${firebaseToken}`,
+        },
+
+        cache:
+          "no-store",
+      }
+    );
+
+  /*
+   * A verified Firebase Auth identity is not automatically a
+   * TSL Alumni Connect member. Before onboarding there may be no
+   * users/{uid} document; current Firestore rules can surface that
+   * as either 403 or 404. Both mean "no usable platform account"
+   * for Assist purposes.
+   */
+  if (
+    response.status ===
+      403 ||
+    response.status ===
+      404
+  ) {
+    return null;
+  }
+
+  if (!response.ok) {
+    console.error(
+      "[TSL Assist] Platform account lookup failed:",
+      response.status
+    );
+
+    throw new Error(
+      "Unable to confirm your Alumni Connect account."
+    );
+  }
+
+  const document =
+    await response.json() as
+      FirestoreDocument;
+
+  const data =
+    documentData(
+      document
+    );
+
+  const role =
+    data.role;
+
+  const status =
+    data.status;
+
+  if (
+    data.uid !== uid ||
+    (
+      role !==
+        "student" &&
+      role !==
+        "alumni"
+    ) ||
+    (
+      status !==
+        "active" &&
+      status !==
+        "pending"
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    uid,
+    role,
+    status,
+    isAdmin:
+      data.isAdmin ===
+      true,
+  };
 }
 
 async function runFirestoreQuery(
@@ -2472,6 +2579,41 @@ export async function POST(
     return errorResponse(
       "Your verified sign-in session could not be confirmed. Sign in again.",
       401
+    );
+  }
+
+  let platformAccount:
+    PlatformUserAccount | null;
+
+  try {
+    platformAccount =
+      await loadPlatformUserAccount({
+        firebaseToken,
+        projectId,
+        uid:
+          verified.uid,
+      });
+  } catch {
+    return errorResponse(
+      "TSL Assist could not confirm your Alumni Connect account. Try again shortly.",
+      503
+    );
+  }
+
+  if (!platformAccount) {
+    return errorResponse(
+      "Complete your Alumni Connect profile before using TSL Assist.",
+      403
+    );
+  }
+
+  if (
+    platformAccount.status !==
+    "active"
+  ) {
+    return errorResponse(
+      "TSL Assist is available to active Alumni Connect members. Alumni awaiting school verification can use it after approval.",
+      403
     );
   }
 
