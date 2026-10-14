@@ -1433,7 +1433,7 @@ test(
 
 
 test(
-  "Admin can backfill a safe public profile for a legacy account",
+  "Admin cannot create another user's public profile after migration",
   async () => {
     await seedAdmin();
 
@@ -1467,7 +1467,7 @@ test(
     const db =
       verifiedDb("admin1");
 
-    await assertSucceeds(
+    await assertFails(
       setDoc(
         doc(
           db,

@@ -23,7 +23,13 @@ export default function PWAClient() {
   const [
     online,
     setOnline,
-  ] = useState(true);
+  ] = useState(
+    () =>
+      typeof navigator ===
+      "undefined"
+        ? true
+        : navigator.onLine
+  );
 
   const [
     installPrompt,
@@ -47,10 +53,6 @@ export default function PWAClient() {
   ] = useState(false);
 
   useEffect(() => {
-    setOnline(
-      navigator.onLine
-    );
-
     const handleOnline =
       () => setOnline(true);
 
@@ -81,6 +83,20 @@ export default function PWAClient() {
   }, []);
 
   useEffect(() => {
+    /*
+     * The install prompt is a production-only PWA feature.
+     * Keeping this listener out of development prevents Chrome's
+     * expected "preventDefault() called" install-banner warning
+     * during local development, while preserving the custom
+     * install flow in production.
+     */
+    if (
+      process.env.NODE_ENV !==
+      "production"
+    ) {
+      return;
+    }
+
     const handler = (
       event: Event
     ) => {

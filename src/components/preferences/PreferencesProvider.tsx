@@ -168,32 +168,54 @@ export function PreferencesProvider({
   ] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw =
-        window.localStorage.getItem(
-          STORAGE_KEY
-        );
+    let cancelled =
+      false;
 
-      if (raw) {
-        const parsed =
-          JSON.parse(raw);
+    const timer =
+      window.setTimeout(
+        () => {
+          if (cancelled) {
+            return;
+          }
 
-        setPreferences(
-          normalizePreferences(
-            parsed
-          )
-        );
-      }
-    } catch (error) {
-      console.warn(
-        "[TSL Alumni] Could not read local display preferences.",
-        error
+          try {
+            const raw =
+              window.localStorage.getItem(
+                STORAGE_KEY
+              );
+
+            if (raw) {
+              const parsed =
+                JSON.parse(raw);
+
+              setPreferences(
+                normalizePreferences(
+                  parsed
+                )
+              );
+            }
+          } catch (error) {
+            console.warn(
+              "[TSL Alumni] Could not read local display preferences.",
+              error
+            );
+          } finally {
+            setLoadingPreferences(
+              false
+            );
+          }
+        },
+        0
       );
-    } finally {
-      setLoadingPreferences(
-        false
+
+    return () => {
+      cancelled =
+        true;
+
+      window.clearTimeout(
+        timer
       );
-    }
+    };
   }, []);
 
   useEffect(() => {
@@ -207,7 +229,15 @@ export function PreferencesProvider({
         ? getSystemTheme()
         : preferences.theme;
 
-    setResolvedTheme(resolved);
+    const resolvedThemeTimer =
+      window.setTimeout(
+        () => {
+          setResolvedTheme(
+            resolved
+          );
+        },
+        0
+      );
 
     try {
       window.localStorage.setItem(
@@ -227,7 +257,11 @@ export function PreferencesProvider({
       preferences.theme !==
       "system"
     ) {
-      return;
+      return () => {
+        window.clearTimeout(
+          resolvedThemeTimer
+        );
+      };
     }
 
     const media =
@@ -257,6 +291,10 @@ export function PreferencesProvider({
     );
 
     return () => {
+      window.clearTimeout(
+        resolvedThemeTimer
+      );
+
       media.removeEventListener(
         "change",
         handleChange

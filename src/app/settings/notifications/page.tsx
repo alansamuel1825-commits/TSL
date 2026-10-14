@@ -135,6 +135,10 @@ function SwitchRow({
   );
 }
 
+function notificationTimestampNow(): number {
+  return Date.now();
+}
+
 export default function NotificationSettingsPage() {
   const router =
     useRouter();
@@ -273,7 +277,7 @@ export default function NotificationSettingsPage() {
             timestampToMillis(
               item.targetAt
             ) >
-            Date.now()
+            notificationTimestampNow()
         ),
       [reminders]
     );

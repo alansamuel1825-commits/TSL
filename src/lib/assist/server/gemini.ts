@@ -50,17 +50,29 @@ export function geminiModel():
   );
 }
 
+export function geminiFallbackModel():
+  string {
+  return (
+    process.env
+      .GEMINI_TSL_AI_FALLBACK_MODEL ||
+    "gemini-3.5-flash-lite"
+  );
+}
+
 function endpoint(
   method:
     "generateContent"
-    | "streamGenerateContent"
-): string {
-  const model =
-    encodeURIComponent(
+    | "streamGenerateContent",
+  model:
+    string =
       geminiModel()
+): string {
+  const encodedModel =
+    encodeURIComponent(
+      model
     );
 
-  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:${method}`;
+  return `https://generativelanguage.googleapis.com/v1beta/models/${encodedModel}:${method}`;
 }
 
 function headers():
@@ -182,6 +194,16 @@ function retryableGeminiStatus(
   );
 }
 
+function providerUnavailableStatus(
+  status: number
+): boolean {
+  return (
+    status === 502 ||
+    status === 503 ||
+    status === 504
+  );
+}
+
 function wait(
   milliseconds: number
 ): Promise<void> {
@@ -199,16 +221,16 @@ async function fetchGeminiWithRetry({
   phase,
   url,
   init,
+  retryDelays = [
+    1000,
+    2500,
+  ],
 }: {
   phase: "planner" | "stream";
   url: string;
   init: RequestInit;
+  retryDelays?: number[];
 }): Promise<Response> {
-  const retryDelays =
-    [
-      700,
-      1800,
-    ];
 
   for (
     let attempt = 0;
@@ -422,7 +444,28 @@ export async function streamWithGemini({
   systemInstruction: string;
   contents: GeminiContent[];
 }): Promise<Response> {
-  const response =
+  const primaryBody =
+    JSON.stringify({
+      systemInstruction: {
+        parts: [
+          {
+            text:
+              systemInstruction,
+          },
+        ],
+      },
+
+      contents,
+
+      generationConfig: {
+        temperature:
+          0.35,
+        maxOutputTokens:
+          1400,
+      },
+    });
+
+  let response =
     await fetchGeminiWithRetry({
       phase:
         "stream",
@@ -440,30 +483,123 @@ export async function streamWithGemini({
           headers(),
 
         body:
-          JSON.stringify({
-            systemInstruction: {
-              parts: [
-                {
-                  text:
-                    systemInstruction,
-                },
-              ],
-            },
-
-            contents,
-
-            generationConfig: {
-              temperature:
-                0.35,
-              maxOutputTokens:
-                1400,
-            },
-          }),
+          primaryBody,
 
         cache:
           "no-store",
       },
+
+      /*
+       * Exponential backoff for transient provider pressure.
+       * Three primary attempts total:
+       * immediate, +1s, +2.5s.
+       */
+      retryDelays: [
+        1000,
+        2500,
+      ],
     });
+
+  /*
+   * Emergency stream-only fallback.
+   *
+   * We deliberately do NOT move tool planning to the fallback
+   * model. Gemini 3.8 Flash remains the planner/primary model.
+   *
+   * If the final answer stream repeatedly hits provider-side
+   * 502/503/504 capacity errors, make one attempt with the
+   * lower-latency production Flash-Lite model.
+   *
+   * The fallback body omits temperature because current Gemini
+   * 3.5 Flash-Lite guidance deprecates sampling parameters.
+   */
+  if (
+    !response.ok &&
+    providerUnavailableStatus(
+      response.status
+    )
+  ) {
+    await logGeminiHttpFailure(
+      "stream",
+      response
+    );
+
+    const fallbackModel =
+      geminiFallbackModel();
+
+    console.warn(
+      "[TSL Assist] Primary Gemini stream unavailable; trying emergency fallback:",
+      {
+        primaryModel:
+          geminiModel(),
+        fallbackModel,
+        httpStatus:
+          response.status,
+      }
+    );
+
+    const fallbackBody =
+      JSON.stringify({
+        systemInstruction: {
+          parts: [
+            {
+              text:
+                systemInstruction,
+            },
+          ],
+        },
+
+        contents,
+
+        generationConfig: {
+          maxOutputTokens:
+            1400,
+        },
+      });
+
+    response =
+      await fetchGeminiWithRetry({
+        phase:
+          "stream",
+
+        url:
+          `${endpoint(
+            "streamGenerateContent",
+            fallbackModel
+          )}?alt=sse`,
+
+        init: {
+          method:
+            "POST",
+
+          headers:
+            headers(),
+
+          body:
+            fallbackBody,
+
+          cache:
+            "no-store",
+        },
+
+        /*
+         * One retry for the emergency fallback:
+         * immediate, then +1s.
+         */
+        retryDelays: [
+          1000,
+        ],
+      });
+
+    if (response.ok) {
+      console.warn(
+        "[TSL Assist] Emergency Gemini fallback succeeded.",
+        {
+          fallbackModel,
+        }
+      );
+    }
+  }
 
   if (
     !response.ok

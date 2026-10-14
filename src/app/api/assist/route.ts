@@ -9,7 +9,6 @@ import {
 
 import {
   APP_KNOWLEDGE,
-  type AppKnowledgeEntry,
 } from "@/lib/assist/appKnowledge";
 
 import {

@@ -80,12 +80,14 @@ export default function ProjectDetailPage() {
     }
 
     if (!projectId) {
-      setError(
-        "Invalid project."
-      );
-      setLoadingProject(
-        false
-      );
+      queueMicrotask(() => {
+        setError(
+          "Invalid project."
+        );
+        setLoadingProject(
+          false
+        );
+      });
       return;
     }
 

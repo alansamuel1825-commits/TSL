@@ -133,10 +133,21 @@ export default function AdminPage() {
 
         setAuthorized(true);
 
-        await Promise.all([
-          loadApplications(),
-          loadReports(),
+        const [
+          pendingApplications,
+          openReports,
+        ] = await Promise.all([
+          getPendingAlumni(),
+          getOpenReports(),
         ]);
+
+        setApplications(
+          pendingApplications as AlumniApplication[],
+        );
+
+        setReports(
+          openReports,
+        );
       } catch (err) {
         console.error(err);
         setError(

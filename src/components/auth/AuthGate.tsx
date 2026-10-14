@@ -15,6 +15,8 @@ import {
 } from "@/lib/auth/useAuth";
 import {
   ensureOwnPublicProfile,
+  getAlumniProfile,
+  getStudentProfile,
   getUserProfile,
 } from "@/lib/firebase/firestore";
 
@@ -100,6 +102,30 @@ export default function AuthGate({
           await getUserProfile(user.uid);
 
         if (!profile) {
+          router.replace(
+            "/onboarding",
+          );
+          return;
+        }
+
+        /*
+         * A platform account is not fully onboarded until its
+         * role-specific profile exists.
+         *
+         * This also repairs older partial onboarding attempts:
+         * /onboarding already knows how to resume an existing
+         * student/alumni account without changing its role.
+         */
+        const roleProfile =
+          profile.role === "student"
+            ? await getStudentProfile(
+                user.uid,
+              )
+            : await getAlumniProfile(
+                user.uid,
+              );
+
+        if (!roleProfile) {
           router.replace(
             "/onboarding",
           );

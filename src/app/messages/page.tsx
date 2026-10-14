@@ -258,21 +258,22 @@ export default function MessagesPage() {
       selectedConversation;
     const currentUserId = user.uid;
 
-    setMessages([]);
-    setLoadingMessages(true);
-    setError("");
-    setShowSafetyMenu(false);
-    setShowReportForm(false);
-    setReportReason("");
-    setReportSent(false);
-
     const otherId =
       currentConversation.studentId ===
       currentUserId
         ? currentConversation.alumniId
         : currentConversation.studentId;
 
-    setOtherUserId(otherId);
+    queueMicrotask(() => {
+      setMessages([]);
+      setLoadingMessages(true);
+      setError("");
+      setShowSafetyMenu(false);
+      setShowReportForm(false);
+      setReportReason("");
+      setReportSent(false);
+      setOtherUserId(otherId);
+    });
 
     const unsubscribe =
       subscribeToMessages(
@@ -289,7 +290,9 @@ export default function MessagesPage() {
       ];
 
     if (cached?.name) {
-      setOtherUser(cached);
+      queueMicrotask(() => {
+        setOtherUser(cached);
+      });
     } else {
       getPublicUserProfile(otherId)
         .then((profile) => {

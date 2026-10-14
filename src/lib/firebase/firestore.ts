@@ -1623,6 +1623,12 @@ export function subscribeToMessages(
       );
 
       callback(messages);
+    },
+    (error) => {
+      console.error(
+        "[TSL Alumni] Message subscription failed.",
+        error
+      );
     }
   );
 }
@@ -3670,6 +3676,16 @@ export function subscribeToNotificationPreferences(
             Partial<NotificationPreferences>
         )
       );
+    },
+    (error) => {
+      console.error(
+        "[TSL Alumni] Notification preferences subscription failed.",
+        error
+      );
+
+      callback({
+        ...DEFAULT_NOTIFICATION_PREFERENCES,
+      });
     }
   );
 }
@@ -4264,6 +4280,15 @@ export function subscribeToNotifications(
           ) as AppNotification[];
 
         emit();
+      },
+      (error) => {
+        console.error(
+          "[TSL Alumni] Notifications subscription failed.",
+          error
+        );
+
+        currentNotifications = [];
+        emit();
       }
     );
 
@@ -4341,6 +4366,15 @@ export function subscribeToUnreadNotificationCount(
             })
           ) as AppNotification[];
 
+        emit();
+      },
+      (error) => {
+        console.error(
+          "[TSL Alumni] Unread notifications subscription failed.",
+          error
+        );
+
+        unreadNotifications = [];
         emit();
       }
     );

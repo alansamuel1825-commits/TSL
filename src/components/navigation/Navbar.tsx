@@ -48,7 +48,9 @@ export default function Navbar() {
       !user ||
       !user.emailVerified
     ) {
-      setUnreadNotifications(0);
+      queueMicrotask(() => {
+        setUnreadNotifications(0);
+      });
       return;
     }
 

@@ -181,12 +181,6 @@ export default function AdminInsightsPage() {
         showSpinner = false
       ) => {
         if (
-          !authorized
-        ) {
-          return;
-        }
-
-        if (
           showSpinner
         ) {
           setRefreshing(
@@ -223,7 +217,7 @@ export default function AdminInsightsPage() {
           );
         }
       },
-      [authorized]
+      []
     );
 
   useEffect(() => {
@@ -267,6 +261,8 @@ export default function AdminInsightsPage() {
           setAuthorized(
             true
           );
+
+          await refreshMetrics();
         }
       } catch (err) {
         console.error(err);
@@ -292,18 +288,6 @@ export default function AdminInsightsPage() {
     user,
     loading,
     router,
-  ]);
-
-  useEffect(() => {
-    if (
-      !authorized
-    ) {
-      return;
-    }
-
-    refreshMetrics();
-  }, [
-    authorized,
     refreshMetrics,
   ]);
 

@@ -33,6 +33,10 @@ import type {
 const SESSION_KEY =
   "tsl-assist-v2-session";
 
+function timestampNow(): number {
+  return Date.now();
+}
+
 const STARTERS = [
   "I like robotics, AI and electronics. Which verified alumni might be relevant to me?",
   "How does mentorship work in this app?",
@@ -580,84 +584,88 @@ export default function AssistPage() {
       AbortController | null
     >(null);
 
-  const restoredRef =
-    useRef(false);
-
   const [
     sessionReady,
     setSessionReady,
   ] = useState(false);
 
   useEffect(() => {
-    if (
-      restoredRef.current
-    ) {
-      return;
-    }
+    let cancelled =
+      false;
 
-    restoredRef.current =
-      true;
+    const timer =
+      window.setTimeout(
+        () => {
+          if (cancelled) {
+            return;
+          }
 
-    try {
-      const raw =
-        sessionStorage.getItem(
-          SESSION_KEY
-        );
+          try {
+            const raw =
+              sessionStorage.getItem(
+                SESSION_KEY
+              );
 
-      if (!raw) {
-        setSessionReady(
-          true
-        );
-        return;
-      }
+            if (raw) {
+              const parsed =
+                JSON.parse(
+                  raw
+                );
 
-      const parsed =
-        JSON.parse(
-          raw
-        );
+              if (
+                Array.isArray(
+                  parsed
+                )
+              ) {
+                setMessages(
+                  parsed
+                    .filter(
+                      (item) =>
+                        item &&
+                        (
+                          item.role ===
+                            "user" ||
+                          item.role ===
+                            "assistant"
+                        ) &&
+                        typeof item.content ===
+                          "string"
+                    )
+                    .slice(
+                      -14
+                    )
+                );
+              }
+            }
 
-      if (
-        Array.isArray(
-          parsed
-        )
-      ) {
-        setMessages(
-          parsed
-            .filter(
-              (item) =>
-                item &&
-                (
-                  item.role ===
-                    "user" ||
-                  item.role ===
-                    "assistant"
-                ) &&
-                typeof item.content ===
-                  "string"
-            )
-            .slice(
-              -14
-            )
-        );
-      }
+            setSessionReady(
+              true
+            );
+          } catch {
+            sessionStorage.removeItem(
+              SESSION_KEY
+            );
 
-      setSessionReady(
-        true
+            setSessionReady(
+              true
+            );
+          }
+        },
+        0
       );
-    } catch {
-      sessionStorage.removeItem(
-        SESSION_KEY
-      );
 
-      setSessionReady(
-        true
+    return () => {
+      cancelled =
+        true;
+
+      window.clearTimeout(
+        timer
       );
-    }
+    };
   }, []);
 
   useEffect(() => {
     if (
-      !restoredRef.current ||
       !sessionReady
     ) {
       return;
@@ -750,7 +758,7 @@ export default function AssistPage() {
         "assistant",
       content: "",
       createdAt:
-        Date.now(),
+        timestampNow(),
     };
 
     setMessages(
@@ -1115,7 +1123,7 @@ export default function AssistPage() {
           5000
         ),
       createdAt:
-        Date.now(),
+        timestampNow(),
     };
 
     const history = [

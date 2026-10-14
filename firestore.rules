@@ -666,59 +666,6 @@ service cloud.firestore {
 
         && publicAfterMatchesUserIdentity(userId);
 
-      /*
-       * Admin-only compatibility path for one-time legacy backfill.
-       * Data must exactly match the existing private user identity.
-       */
-      allow create: if isAdmin()
-        && userExists(userId)
-
-        && request.resource.data.keys().hasOnly([
-          'uid',
-          'displayName',
-          'role',
-          'photoURL',
-          'createdAt',
-          'updatedAt'
-        ])
-
-        && request.resource.data.uid == userId
-
-        && request.resource.data.displayName
-          == userDoc(userId).data.displayName
-
-        && request.resource.data.role
-          == userDoc(userId).data.role
-
-        && request.resource.data.photoURL
-          == userDoc(userId).data.photoURL
-
-        && request.resource.data.createdAt == request.time
-        && request.resource.data.updatedAt == request.time;
-
-      allow update: if isAdmin()
-        && userExists(userId)
-
-        && request.resource.data.uid == resource.data.uid
-        && request.resource.data.role == resource.data.role
-
-        && request.resource.data
-          .diff(resource.data)
-          .affectedKeys()
-          .hasOnly([
-            'displayName',
-            'photoURL',
-            'updatedAt'
-          ])
-
-        && request.resource.data.displayName
-          == userDoc(userId).data.displayName
-
-        && request.resource.data.photoURL
-          == userDoc(userId).data.photoURL
-
-        && request.resource.data.updatedAt == request.time;
-
       allow delete: if isAdmin();
     }
 
