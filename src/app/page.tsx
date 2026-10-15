@@ -602,44 +602,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* FOOTER */}
-      <footer className="border-t border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-col gap-7 px-5 py-8 sm:px-8 md:flex-row md:items-center md:justify-between lg:px-10">
-          <div className="flex items-center gap-3">
-            <div className="relative h-10 w-10 overflow-hidden rounded-full bg-white ring-1 ring-slate-200">
-              <Image
-                src="/the-study-logo.png"
-                alt=""
-                fill
-                sizes="40px"
-                className="object-contain p-1"
-              />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-950">
-                The Study L&apos;école Internationale
-              </p>
-              <p className="mt-0.5 text-xs text-slate-500">Alumni Connect</p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs font-medium text-slate-500">
-            <Link href="/login" className="transition hover:text-slate-950">
-              Sign in
-            </Link>
-            <Link href="/signup" className="transition hover:text-slate-950">
-              Join
-            </Link>
-            <a href="#trust" className="transition hover:text-slate-950">
-              Trust & safety
-            </a>
-          </div>
-
-          <p className="text-xs text-slate-400">
-            Built for The Study community.
-          </p>
-        </div>
-      </footer>
     </main>
   );
 }

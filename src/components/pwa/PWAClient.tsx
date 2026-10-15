@@ -3,6 +3,7 @@
 import {
   useEffect,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 interface BeforeInstallPromptEvent
@@ -20,16 +21,34 @@ interface BeforeInstallPromptEvent
 }
 
 export default function PWAClient() {
-  const [
-    online,
-    setOnline,
-  ] = useState(
-    () =>
-      typeof navigator ===
-      "undefined"
-        ? true
-        : navigator.onLine
-  );
+  const online =
+    useSyncExternalStore(
+      (onStoreChange) => {
+        window.addEventListener(
+          "online",
+          onStoreChange
+        );
+
+        window.addEventListener(
+          "offline",
+          onStoreChange
+        );
+
+        return () => {
+          window.removeEventListener(
+            "online",
+            onStoreChange
+          );
+
+          window.removeEventListener(
+            "offline",
+            onStoreChange
+          );
+        };
+      },
+      () => navigator.onLine,
+      () => true
+    );
 
   const [
     installPrompt,
@@ -51,36 +70,6 @@ export default function PWAClient() {
     installing,
     setInstalling,
   ] = useState(false);
-
-  useEffect(() => {
-    const handleOnline =
-      () => setOnline(true);
-
-    const handleOffline =
-      () => setOnline(false);
-
-    window.addEventListener(
-      "online",
-      handleOnline
-    );
-
-    window.addEventListener(
-      "offline",
-      handleOffline
-    );
-
-    return () => {
-      window.removeEventListener(
-        "online",
-        handleOnline
-      );
-
-      window.removeEventListener(
-        "offline",
-        handleOffline
-      );
-    };
-  }, []);
 
   useEffect(() => {
     /*
